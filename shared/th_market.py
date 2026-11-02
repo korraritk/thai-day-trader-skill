@@ -7,6 +7,7 @@ Thailand has no daylight saving, so Bangkok is a fixed UTC+7 and no tz database 
 import datetime
 import json
 import os
+import sys
 import time as time_module
 import urllib.error
 import urllib.parse
@@ -22,6 +23,15 @@ _HOLIDAYS = None
 
 class MarketError(Exception):
     """A Thai market rule cannot be applied: say why in one plain line."""
+
+
+def utf8_stdout():
+    """Thai text (holiday names, headlines) prints as UTF-8, not the Windows console code page."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
 
 
 def data_path(name):
@@ -358,6 +368,24 @@ def fetch_bars(symbols, rng, interval, pause=PAUSE):
 
 def fetch_chart(symbol, rng, interval):
     return parse_chart(yahoo_get(chart_path(symbol, rng, interval)), symbol)
+
+
+def market_clock(now):
+    """now, or the last session close before it that day: the lunch break and the evening add no delay."""
+    day = now.date()
+    last = None
+    for start, end in sessions(day):
+        s, e = datetime.datetime.combine(day, start), datetime.datetime.combine(day, end)
+        if s <= now < e:
+            return now
+        if now >= e:
+            last = e
+    return last or now
+
+
+def minutes_behind(data_time, now):
+    """Minutes of trading time between Yahoo's data and now (never negative)."""
+    return max(0, int((market_clock(now) - data_time).total_seconds() // 60))
 
 
 def parse_iso_bkk(text):

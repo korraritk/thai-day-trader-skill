@@ -68,18 +68,6 @@ def _data_to(series, bars, day, now):
     return last
 
 
-def market_clock(day, now):
-    """now, or the last session close before it: the lunch break and the evening add no delay."""
-    last = None
-    for start, end in tm.sessions(day):
-        s, e = datetime.datetime.combine(day, start), datetime.datetime.combine(day, end)
-        if s <= now < e:
-            return now
-        if now >= e:
-            last = e
-    return last or now
-
-
 def evaluate(series, day, now, setup="orb", level=None, or_minutes=15, min_volume_x=None,
              no_entries_after=datetime.time(15, 30)):
     """Pure: the setup's status at `now` from one day's 5-minute bars."""
@@ -107,7 +95,7 @@ def evaluate(series, day, now, setup="orb", level=None, or_minutes=15, min_volum
     data_to = _data_to(series, bars, day, now)
     if data_to:
         res["data_to"] = hm(data_to)
-        res["behind_minutes"] = max(0, int((market_clock(day, now) - data_to).total_seconds() // 60))
+        res["behind_minutes"] = tm.minutes_behind(data_to, now)
     if bars:
         res["last_close"] = bars[-1]["c"]
     if now < open_dt:
@@ -452,6 +440,7 @@ def main(argv=None):
     common(p)
     p.add_argument("--watchlist", default="th-trader/watchlist.json")
     a = ap.parse_args(argv)
+    tm.utf8_stdout()
     if not a.cmd:
         ap.print_help()
         return 1
