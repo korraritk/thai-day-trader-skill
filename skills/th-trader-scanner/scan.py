@@ -257,6 +257,23 @@ def usable(bars, day, cutoff, n_range):
     return all(b["start"] == s for b, s in zip(bars, want))
 
 
+def filled_closes(bars, day, cutoff):
+    """Stage-1 bars on every slot to the cutoff, a missing slot carrying the close before it.
+    Yahoo spark leaves out 5-minute bars whose close did not change. None when the first
+    slot of the day is missing (nothing to carry)."""
+    step = datetime.timedelta(minutes=BAR_MIN)
+    want = [s for s in tm.slots(day, BAR_MIN) if s + step <= cutoff]
+    have = {b["start"]: b for b in bars}
+    if not want or want[0] not in have:
+        return None
+    out, last = [], None
+    for s in want:
+        b = have.get(s)
+        last = b["c"] if b else last
+        out.append({"start": s, "c": last, "h": None, "l": None, "v": b["v"] if b else 0})
+    return out
+
+
 def orb_candidate(bars, n_range):
     """Stage 1, closes only: some completed bar after the range closed at or above
     the highest close of the range. Necessary for a breakout (range high >= any range close)."""
@@ -362,7 +379,12 @@ def scan_orb(stage1, symbols, day, cutoff, or_minutes, min_price=0.0, min_volume
             continue
         counts["fetched"] += 1
         bars = tm.intraday_bars(s, day, cutoff, BAR_MIN)
-        if not usable(bars, day, cutoff, n_range):
+        if confirm is not None:
+            bars = filled_closes(bars, day, cutoff)  # spark gaps; stage 2 checks the real bars
+            if bars is None or len(bars) < n_range:
+                counts["unusable"] += 1
+                continue
+        elif not usable(bars, day, cutoff, n_range):
             counts["unusable"] += 1
             continue
         vol = sum(b["v"] for b in bars) if s.get("v") else (s.get("meta") or {}).get("regularMarketVolume") or 0

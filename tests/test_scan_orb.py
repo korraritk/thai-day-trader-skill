@@ -58,6 +58,21 @@ def test_missing_morning_bar_is_unusable_not_a_hit():
     assert hits == [] and counts["unusable"] == 1
 
 
+def test_spark_gaps_in_stage_1_are_not_unusable():
+    """Yahoo spark leaves out 5-minute bars whose close did not change; v8 has them all."""
+    full = ptt_series()
+    cutoff = datetime(2026, 10, 30, 11, 0)
+    drop = {datetime(2026, 10, 30, 10, h) for h in (20, 25, 30, 50)}
+    keep = [i for i, t in enumerate(full["t"]) if tm.ts_to_bkk(t) not in drop]
+    spark = {"t": [full["t"][i] for i in keep], "c": [full["c"][i] for i in keep],
+             "o": None, "h": None, "l": None, "v": None, "meta": {"regularMarketVolume": 1_000_000}}
+    asked = []
+    hits, counts, failed = scan.scan_orb({"PTT": spark}, ["PTT"], DAY, cutoff, 15,
+                                         confirm=lambda sym: asked.append(sym) or full)
+    assert counts["unusable"] == 0 and counts["scanned"] == 1
+    assert failed == {}
+
+
 def test_stale_minutes():
     assert scan.stale_minutes(datetime(2026, 10, 30, 10, 30), datetime(2026, 10, 30, 11, 15)) == 45
 
