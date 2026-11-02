@@ -53,7 +53,8 @@ Python standard library only, like the original set. Prices and money use `Decim
 - `tick-tables.json`: a list of tables, each with `valid_from`, `valid_to` (or null), `status` and `bands` (`[{from, tick}]`).
   - The 2009 table is `"status": "verified"`, valid to 2026-11-15.
   - The 2026-11-16 table is `"status": "missing"` with no bands until the values are entered from SET's notice.
-  - Rounding a price for a date that falls under a missing table stops with a plain message: "The SET tick table from 2026-11-16 is not in tick-tables.json yet." It never falls back to the old table.
+  - Decided by the user on 2026-11-02: until those values are entered, a date under the missing table uses the 2009 table, and every run that does so prints one warning line: "SET's tick table from 2026-11-16 is not in tick-tables.json yet; prices were rounded with the 2009 table." The JSON outputs carry `"tick_table": "2009 (fallback)"`. The new table is reported to have smaller ticks for THB 5–50, so a price on the 2009 grid is expected to stay a valid price, only coarser. That is unverified until the new values are in.
+  - Once the new table's bands are entered and its status becomes `verified`, the fallback and the warning stop by themselves.
 
 ### Functions
 
@@ -137,7 +138,7 @@ ThaiTraderSkills/
 
 - `th_market.py`:
   - tick rounding at the band edges (1.99/2.00, 4.98/5.00, 24.90/25.00, 99.75/100.00)
-  - the stop on a date under the missing 2026-11-16 table
+  - a date under the missing 2026-11-16 table rounds with the 2009 table and reports the fallback; with the new bands filled in, it uses them and reports no fallback
   - the ±30% limits
   - `sessions`/`slots` on a normal day, a holiday and a weekend
   - a date past the last holiday year
@@ -155,6 +156,6 @@ ThaiTraderSkills/
 
 ## Open items
 
-- **The 2026-11-16 tick table.** Its values must be entered into `tick-tables.json` from SET's official notice before any price rounding for dates from 16 Nov 2026. The scanner itself does not round prices, so part 1 works without it, but sub-project 2 (exit and budget) does not.
+- **The 2026-11-16 tick table.** Its values should be entered into `tick-tables.json` from SET's official notice. Until then every tool, sub-project 2 included, rounds with the 2009 table and warns (see Part 1, data files).
 - The holiday file must gain 2028 before 2028.
 - Short-selling and other 16 Nov 2026 rule changes matter only if a later sub-project adds the short side. All skills are long only.
