@@ -121,11 +121,11 @@ def test_setups_module_is_the_scanner_math():
     assert scan.find_setups is setups.find_setups
 ```
 
-Before writing the asserted values, recompute them with `python -c`:
-- 42.25 → 0.164% × 1.07 = 0.07415 per side
-- 41.75 → 0.07327
-- total 0.1474 to 4 places
-- 43.25 → 0.0759
+Values checked with python at plan time (2026-11-02, commission 0.15%, so 0.157% × 1.07 per side):
+- one side of 12,675 = 21.29
+- round trip 42.25/41.75 = 0.1411 per share
+- risk per share 0.6411
+- net R 1.34
 
 **Ruling to make on run:** if the printed value differs from the test's literal, the computed value wins. Fix the literal and ledger it.
 
