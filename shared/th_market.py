@@ -1,4 +1,5 @@
-"""Thai market rules for the th-trader skills: Bangkok time, the SET calendar and sessions.
+"""Thai market rules for the th-trader skills: Bangkok time, the SET calendar and sessions,
+tick sizes, price limits, board lot, and Yahoo .BK data.
 
 Standard library only. Every datetime here is naive Bangkok time unless its name says utc.
 Thailand has no daylight saving, so Bangkok is a fixed UTC+7 and no tz database is needed.
@@ -6,6 +7,7 @@ Thailand has no daylight saving, so Bangkok is a fixed UTC+7 and no tz database 
 import datetime
 import json
 import os
+from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 BKK_OFFSET = datetime.timedelta(hours=7)
@@ -102,3 +104,102 @@ def slots(d, interval=5):
             out.append(t)
             t += step
     return out
+
+
+# ---------------------------------------------------------------- tick sizes, price limits, board lot
+
+_TICK_FILE = data_path("tick-tables.json")
+_TICK_TABLES = None
+TICK_FALLBACK_NOTE = ("SET's tick table from 2026-11-16 is not in tick-tables.json yet; "
+                      "prices were rounded with the 2009 table.")
+LIMIT_PCT = Decimal("0.30")
+BOARD_LOTS = (50, 100)
+
+
+def _tick_tables():
+    global _TICK_TABLES
+    if _TICK_TABLES is None:
+        with open(_TICK_FILE, encoding="utf-8") as fh:
+            raw = json.load(fh)
+        tables = []
+        for t in raw:
+            tables.append({
+                "name": t["name"],
+                "from": datetime.date.fromisoformat(t["valid_from"]),
+                "to": datetime.date.fromisoformat(t["valid_to"]) if t.get("valid_to") else None,
+                "verified": t.get("status") == "verified" and bool(t.get("bands")),
+                "bands": sorted(((Decimal(b["from"]), Decimal(b["tick"])) for b in t.get("bands", [])),
+                                key=lambda b: b[0]),
+            })
+        _TICK_TABLES = sorted(tables, key=lambda t: t["from"])
+    return _TICK_TABLES
+
+
+def _table_for(d):
+    """(table used, fell back?) for date d."""
+    tables = _tick_tables()
+    valid = [t for t in tables if t["from"] <= d and (t["to"] is None or d <= t["to"])]
+    if not valid:
+        raise MarketError("no SET tick table covers %s" % d.isoformat())
+    table = valid[-1]
+    if table["verified"]:
+        return table, False
+    older = [t for t in tables if t["verified"] and t["from"] < table["from"]]
+    if not older:
+        raise MarketError("the SET tick table for %s has no values" % d.isoformat())
+    return older[-1], True
+
+
+def tick_fallback(d):
+    return _table_for(d)[1]
+
+
+def tick_table_label(d):
+    table, fell_back = _table_for(d)
+    return table["name"] + (" (fallback)" if fell_back else "")
+
+
+def tick(price, d):
+    price = Decimal(price)
+    size = None
+    for start, t in _table_for(d)[0]["bands"]:
+        if price >= start:
+            size = t
+    if size is None:
+        raise MarketError("no tick size for price %s" % price)
+    return size
+
+
+def round_down_tick(price, d):
+    price = Decimal(price)
+    t = tick(price, d)
+    return (price / t).to_integral_value(rounding=ROUND_FLOOR) * t
+
+
+def round_up_tick(price, d):
+    price = Decimal(price)
+    t = tick(price, d)
+    return (price / t).to_integral_value(rounding=ROUND_CEILING) * t
+
+
+def round_tick(price, d):
+    """Round half up to the nearest valid price."""
+    price = Decimal(price)
+    t = tick(price, d)
+    return (price / t).to_integral_value(rounding=ROUND_HALF_UP) * t
+
+
+def price_limits(prev_close, d):
+    """(floor, ceiling) at -/+30% of the previous close, rounded inward to a valid tick."""
+    prev = Decimal(prev_close)
+    return round_up_tick(prev * (1 - LIMIT_PCT), d), round_down_tick(prev * (1 + LIMIT_PCT), d)
+
+
+def board_lot(lot=None):
+    """100 shares, or the user's --lot (50 for a stock at or above THB 500 for 6 months)."""
+    if lot is None:
+        return 100
+    if lot not in BOARD_LOTS:
+        raise MarketError("a SET board lot is 100 shares, or 50 for a stock priced at or above THB 500 "
+                          "for 6 months; %s is not one" % lot)
+    return lot

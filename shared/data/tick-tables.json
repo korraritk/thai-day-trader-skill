@@ -1,0 +1,26 @@
+[
+  {
+    "name": "2009",
+    "valid_from": "2009-01-01",
+    "valid_to": "2026-11-15",
+    "status": "verified",
+    "bands": [
+      {"from": "0", "tick": "0.01"},
+      {"from": "2", "tick": "0.02"},
+      {"from": "5", "tick": "0.05"},
+      {"from": "10", "tick": "0.10"},
+      {"from": "25", "tick": "0.25"},
+      {"from": "100", "tick": "0.50"},
+      {"from": "200", "tick": "1.00"},
+      {"from": "400", "tick": "2.00"}
+    ]
+  },
+  {
+    "name": "2026-11-16",
+    "valid_from": "2026-11-16",
+    "valid_to": null,
+    "status": "missing",
+    "bands": [],
+    "note": "Smaller ticks for THB 5-50. Enter the bands from SET's official notice and set status to verified."
+  }
+]
