@@ -21,7 +21,7 @@ def test_installs_a_standalone_skill(tmp_path):
     r = install(tmp_path)
     assert r.returncode == 0, r.stdout + r.stderr
     d = tmp_path / "th-trader-scanner"
-    for name in ("SKILL.md", "scan.py", "universe_file.py", "th_market.py", "data/tick-tables.json",
+    for name in ("SKILL.md", "scan.py", "universe_file.py", "th_market.py", "setups.py", "data/tick-tables.json",
                  "data/set-holidays.json", ".installed-from-thaitraderskills"):
         assert (d / name).exists(), name
     f = os.path.join(FIXTURES, "yahoo", "spark_PTT_CPALL_1d_3mo.json")

@@ -3,7 +3,7 @@
 Installs the th-trader-* skills from this repo into Claude Code's skills folder.
 
 .DESCRIPTION
-Copies each skills\<name>\ folder to <Target>\<name>\ and adds shared\th_market.py and
+Copies each skills\<name>\ folder to <Target>\<name>\ and adds shared\*.py and
 shared\data\ to it, so every installed skill stands alone. Writes a marker file into each
 folder it installs and replaces only folders that carry that marker. It never touches a
 folder whose name does not start with th-trader-.
@@ -50,7 +50,7 @@ foreach ($skill in $skills) {
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
     Get-ChildItem -Path $skill.FullName -Force | Where-Object { $_.Name -ne "__pycache__" } |
         Copy-Item -Destination $dest -Recurse -Force
-    Copy-Item -Path (Join-Path $Shared "th_market.py") -Destination $dest -Force
+    Get-ChildItem -Path $Shared -Filter "*.py" | Copy-Item -Destination $dest -Force
     Copy-Item -Path (Join-Path $Shared "data") -Destination $dest -Recurse -Force
     Set-Content -Path (Join-Path $dest $Marker) -Value "ThaiTraderSkills $commit" -Encoding ASCII
     Write-Output "Installed $($skill.Name) to $dest ($commit)"

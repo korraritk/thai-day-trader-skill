@@ -408,3 +408,88 @@ def intraday_bars(series, day, cutoff, interval=5):
         out[start] = {"start": start, "o": _num(series.get("o"), i), "h": _num(series.get("h"), i),
                       "l": _num(series.get("l"), i), "c": float(c), "v": _num(series.get("v"), i) or 0}
     return [out[k] for k in sorted(out)]
+
+
+# ---------------------------------------------------------------- config and fees
+# Defaults checked 2026-11-02 against current Thai rates (see the part 2 spec): SET trading
+# fee 0.005% + TCH clearing 0.001% + regulatory (SEC) 0.001%, VAT 7% (extended to
+# 2027-09-30). Commission is negotiated per broker; 0.15% is a common online
+# cash-balance rate. Set commission_pct to your broker's rate.
+
+DEFAULT_CONFIG = {
+    "commission_pct": 0.15,
+    "market_fees_pct": 0.007,
+    "vat_pct": 7,
+    "budget_thb": 100000,
+    "max_loss_per_trade_thb": 500,
+    "max_position_pct": 50,
+    "cash_buffer_pct": 10,
+    "max_daily_loss_thb": 1500,
+    "max_trades_per_day": 3,
+    "min_reward_risk": 1.5,
+    "flat_by": "16:20",
+    "no_entries_after": "15:30",
+    "blocked": [],
+}
+_NUMBER_KEYS = ("commission_pct", "market_fees_pct", "vat_pct", "budget_thb", "max_loss_per_trade_thb",
+                "max_position_pct", "cash_buffer_pct", "max_daily_loss_thb", "max_trades_per_day",
+                "min_reward_risk")
+_HHMM_KEYS = ("flat_by", "no_entries_after")
+
+
+def load_config(path="th-trader/config.json"):
+    """The file's keys over DEFAULT_CONFIG. A missing file means all defaults."""
+    cfg = dict(DEFAULT_CONFIG)
+    if path and os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                raw = json.load(fh)
+        except ValueError as e:
+            raise MarketError("%s is not valid JSON: %s" % (path, e))
+        if not isinstance(raw, dict):
+            raise MarketError("%s should hold a JSON object of settings" % path)
+        cfg.update(raw)
+    for k in _NUMBER_KEYS:
+        v = cfg[k]
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise MarketError('%s: "%s" should be a number, not %r' % (path, k, v))
+    for k in _HHMM_KEYS:
+        v = cfg[k]
+        try:
+            datetime.datetime.strptime(str(v), "%H:%M")
+        except ValueError:
+            raise MarketError('%s: "%s" should be a 24-hour HH:MM time, not %r' % (path, k, v))
+    if not isinstance(cfg["blocked"], list) or not all(isinstance(x, str) for x in cfg["blocked"]):
+        raise MarketError('%s: "blocked" should be a list of symbols' % path)
+    return cfg
+
+
+def _fee_rate(cfg):
+    return ((Decimal(str(cfg["commission_pct"])) + Decimal(str(cfg["market_fees_pct"]))) / 100
+            * (1 + Decimal(str(cfg["vat_pct"])) / 100))
+
+
+def fee(value_thb, cfg):
+    """One side's fee on a trade of value_thb: commission + market fees, plus VAT on both."""
+    return Decimal(value_thb) * _fee_rate(cfg)
+
+
+def round_trip_fee_per_share(entry, exit_price, cfg):
+    return fee(Decimal(entry), cfg) + fee(Decimal(exit_price), cfg)
+
+
+def fees_line(cfg):
+    return ("Fees: commission %s%% + market %s%% + VAT %s%% per side (set commission_pct to your broker's rate)."
+            % (cfg["commission_pct"], cfg["market_fees_pct"], cfg["vat_pct"]))
+
+
+def plan_numbers(entry, stop, target, cfg):
+    """Risk, reward and R per share for a long, fees counted."""
+    entry, stop, target = Decimal(entry), Decimal(stop), Decimal(target)
+    fee_at_stop = round_trip_fee_per_share(entry, stop, cfg)
+    fee_at_target = round_trip_fee_per_share(entry, target, cfg)
+    risk = (entry - stop) + fee_at_stop
+    reward = (target - entry) - fee_at_target
+    return {"risk_per_share": risk, "reward_per_share": reward, "fee_at_stop": fee_at_stop,
+            "fee_at_target": fee_at_target, "gross_r": (target - entry) / (entry - stop),
+            "net_r": reward / risk}
