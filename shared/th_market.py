@@ -469,6 +469,11 @@ def _fee_rate(cfg):
             * (1 + Decimal(str(cfg["vat_pct"])) / 100))
 
 
+def fee_rate(cfg):
+    """One side's fee as a fraction of the trade value, VAT included."""
+    return _fee_rate(cfg)
+
+
 def fee(value_thb, cfg):
     """One side's fee on a trade of value_thb: commission + market fees, plus VAT on both."""
     return Decimal(value_thb) * _fee_rate(cfg)

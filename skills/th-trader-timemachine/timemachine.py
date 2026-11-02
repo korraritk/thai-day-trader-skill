@@ -327,3 +327,330 @@ def verdict_notes(mc):
     if lv and abs(lv[0]) >= COIN_FLIP and avg is not None and avg != 0 and (avg > 0) != (lv[0] > 0):
         notes.append("Average R is %+.3f all the same: the replays that hit neither pull it the other way." % avg)
     return notes
+
+
+# ---------------------------------------------------------------- swing: daily bars
+
+def daily_pool(bars):
+    """Every past day as (o, h, l, c) / the previous close. A bar without o/h/l uses its close."""
+    pool = []
+    for prev, b in zip(bars, bars[1:]):
+        pc, c = prev["c"], b["c"]
+        o, h, l = (b[k] if b[k] is not None else c for k in ("o", "h", "l"))
+        pool.append((o / pc, h / pc, l / pc, c / pc))
+    return pool
+
+
+def simulate_swing(pool, entry, stop, target, days, risk_per_share, fee_rate, replays=10000, seed=19):
+    """Replays of `days` trading days from the entry close. Each day is a random past day scaled
+    to the previous simulated close and clamped to +/-30% of it."""
+    r_target = net_r(target, entry, risk_per_share, fee_rate)
+    rng = random.Random(seed)
+    choice = rng.choice
+    outcomes, closes, Rs, paths = [], [], [], []
+    for n in range(replays):
+        p, outcome, exit_at, path = entry, None, None, [entry]
+        for _ in range(days):
+            o, h, l, c, x, out = walk(choice(pool), p, stop, target, p * 0.7, p * 1.3)
+            if outcome is None and out:
+                outcome, exit_at = out, x
+            p = c
+            if n < SAMPLE_PATHS:
+                path.append(round(p, 2))
+        outcomes.append(outcome or "close")
+        closes.append(p)
+        Rs.append(net_r(exit_at if outcome else p, entry, risk_per_share, fee_rate))
+        if n < SAMPLE_PATHS:
+            paths.append(path)
+    rng = random.Random(seed)
+    allp = []
+    for _ in range(BAND_PATHS):
+        p, path = entry, [entry]
+        for _ in range(days):
+            p = min(max(p * rng.choice(pool)[3], p * 0.7), p * 1.3)
+            path.append(p)
+        allp.append(path)
+    return summarize(outcomes, closes, Rs, entry, r_target, replays, seed,
+                     {"bars_left": days, "sample_paths": paths, "bands": bands_of(allp), "band_paths": BAND_PATHS})
+
+
+def history_swing(bars, setup_tags, stop_pct, target_r, days, fee_rate):
+    """Every past day on which the stock matched one of the plan's setup tags (the scanner's own
+    find_setups), entered at that close with the plan's stop share and target R."""
+    closes = [b["c"] for b in bars]
+    want = set(setup_tags)
+    rows = []
+    for i in range(30, len(bars) - 1):
+        tags = set(setups.find_setups(closes[:i + 1])[0])
+        if not tags & want:
+            continue
+        d = bars[i]["date"]
+        entry = closes[i]
+        stop = float(tm.round_down_tick(Decimal(str(round(entry * (1 - stop_pct), 6))), d))
+        if stop >= entry:
+            continue
+        target = float(tm.round_tick(Decimal(str(round(entry + target_r * (entry - stop), 6))), d))
+        risk = (entry - stop) + (entry + stop) * fee_rate
+        outcome, x, p = None, None, entry
+        for b in bars[i + 1:i + 1 + days]:
+            p = b["c"]
+            o = b["o"] if b["o"] is not None else p
+            lo = b["l"] if b["l"] is not None else p
+            hi = b["h"] if b["h"] is not None else p
+            if o <= stop:
+                outcome, x = "stop", o
+            elif lo <= stop:
+                outcome, x = "stop", stop
+            elif o >= target or hi >= target:
+                outcome, x = "target", target
+            if outcome:
+                break
+        rows.append({"index": i, "date": d.isoformat(), "setups": sorted(tags & want), "entry": round(entry, 2),
+                     "stop": stop, "target": target, "outcome": outcome or "close",
+                     "r": round(net_r(x if outcome else p, entry, risk, fee_rate), 3)})
+    return rows
+
+
+def history_summary(rows):
+    fired = [r for r in rows if r.get("r") is not None]
+    out = {"fired": len(fired), "target": sum(r["outcome"] == "target" for r in fired),
+           "stop": sum(r["outcome"] == "stop" for r in fired), "close": sum(r["outcome"] == "close" for r in fired),
+           "avg_R": round(statistics.mean(r["r"] for r in fired), 3) if fired else None}
+    return out
+
+
+# ---------------------------------------------------------------- one run
+
+def _f(x):
+    return float(Decimal(str(x)))
+
+
+def run_plan(plan, series, cfg, now, replays, seed, until=None):
+    """The timemachine.json document for a plan and its chart series."""
+    entry, stop, target = _f(plan["entry"]), _f(plan["stop"]), _f(plan["target"])
+    risk = _f(plan["risk_per_share"])
+    fr = float(tm.fee_rate(cfg))
+    day = datetime.date.fromisoformat(plan["date"])
+    stop_rule = str(plan.get("stop_rule") or "or-mid")
+    target_r = float(plan.get("target_r") or 2.0)
+    doc = {"created_by": "th-trader-timemachine", "created_at": now.strftime("%Y-%m-%dT%H:%M:%S+07:00"),
+           "mode": plan["mode"], "plan": {"symbol": plan["symbol"], "date": plan["date"],
+                                          "entry_time": plan.get("entry_time"), "entry": entry, "stop": stop,
+                                          "target": target, "risk_per_share": risk, "target_r": target_r},
+           "fees": tm.fees_line(cfg), "currency": "THB"}
+    if plan["mode"] == "swing":
+        bars = [b for b in tm.daily_bars(series, now) if b["date"] <= day]
+        if len(bars) < 60:
+            raise TMError("only %d daily bars for %s before %s: too short a history to replay" % (len(bars), plan["symbol"], day))
+        days = int(plan.get("days") or 10)
+        mc = simulate_swing(daily_pool(bars), entry, stop, target, days, risk, fr, replays, seed)
+        mc.update(until="day %d" % days, pool_days=len(bars) - 1, pool_from=bars[0]["date"].isoformat(),
+                  pool_to=bars[-1]["date"].isoformat(), band_times=["D+%d" % i for i in range(days + 1)])
+        if plan.get("setups"):
+            rows = history_swing(bars[:-1], plan["setups"], (entry - stop) / entry, target_r, days, fr)
+            doc["history"] = dict(history_summary(rows), rule="setup %s, %gR, %d days" % (
+                "/".join(plan["setups"]), target_r, days), rows=rows)
+        else:
+            doc["history"] = {"note": "skipped: a hand-entered plan has no setup to look for in the past."}
+    else:
+        sessions = usable_sessions(series, day)
+        require_sessions(sessions, plan["symbol"])
+        k = entry_slot(series, plan)
+        until_t = until or datetime.datetime.strptime(plan.get("flat_by") or "16:20", "%H:%M").time()
+        last = end_slot(day, until_t)
+        if last <= k:
+            raise TMError("the entry at %s is at or after %s: nothing left to replay" % (plan.get("entry_time"), until_t))
+        prev = plan.get("prev_close")
+        prev_close = _f(prev) if prev else sessions[max(sessions)][-1]["c"]
+        floor, ceiling = (float(x) for x in tm.price_limits(Decimal(str(prev_close)), day))
+        mc = simulate(build_pool(list(sessions.values())), entry, stop, target, k, last, floor, ceiling, risk, fr,
+                      replays, seed)
+        grid = tm.slots(day, 5)
+        mc.update(until=until_t.strftime("%H:%M"), pool_sessions=len(sessions), pool_from=min(sessions).isoformat(),
+                  pool_to=max(sessions).isoformat(), floor=floor, ceiling=ceiling,
+                  band_times=[(grid[k] + STEP).strftime("%H:%M")] + [(grid[i] + STEP).strftime("%H:%M")
+                                                                     for i in range(k + 1, last + 1)])
+        rows = history_intraday(sessions, int(plan.get("or_minutes") or 15), stop_rule, (entry - stop) / entry,
+                                target_r, last, fr)
+        doc["history"] = dict(history_summary(rows), sessions=len(sessions),
+                              rule="%d-min opening range, %s stop, %gR" % (int(plan.get("or_minutes") or 15),
+                                                                           stop_rule, target_r), rows=rows)
+    doc["mc"] = mc
+    doc["verdict"] = verdict(mc)
+    doc["verdict_notes"] = verdict_notes(mc)
+    doc["note"] = "Statistics from past bars, not a prediction; a real fill can be worse."
+    return doc
+
+
+def pc(x):
+    return "%5.1f %%" % (100 * x)
+
+
+def report(doc):
+    p, m, h = doc["plan"], doc["mc"], doc["history"]
+    when = (" at %s" % p["entry_time"]) if p.get("entry_time") else " at the close"
+    lines = ["%s long, %s: entry %.2f%s, stop %.2f, target %.2f (%gR gross, %.2f net of fees; risk %.2f a share with fees)."
+             % (p["symbol"], p["date"], p["entry"], when, p["stop"], p["target"], p["target_r"], m["r_at_target"],
+                p["risk_per_share"])]
+    if doc["mode"] == "swing":
+        lines.append("%s replays of the next %d trading days, seed %d. Each day is drawn from %s's own daily bars "
+                     "(%d days, %s to %s), clamped to +/-30%%." % ("{:,}".format(m["replays"]), m["bars_left"],
+                                                                   m["seed"], p["symbol"], m["pool_days"],
+                                                                   m["pool_from"], m["pool_to"]))
+    else:
+        lines.append("%s replays of the rest of the session to %s (%d five-minute bars), seed %d. Each bar is drawn "
+                     "from %s's own bars at the same time of day (+-%d) over %d usable sessions (%s to %s); "
+                     "floor %.2f, ceiling %.2f." % ("{:,}".format(m["replays"]), m["until"], m["bars_left"],
+                                                    m["seed"], p["symbol"], m["window"], m["pool_sessions"],
+                                                    m["pool_from"], m["pool_to"], m["floor"], m["ceiling"]))
+    lines += ["",
+              "  target first   %s" % pc(m["p_target"]),
+              "  stop first     %s" % pc(m["p_stop"]),
+              "  neither        %-8s still open at %s" % (pc(m["p_neither"]), m["until"]),
+              "  green          %-8s target first, or above the entry at %s" % (pc(m["p_green"]), m["until"]),
+              "",
+              "  Price at %s: median %.2f, 90 %% of replays between %.2f and %.2f."
+              % (m["until"], m["median_close"], m["p5_close"], m["p95_close"]),
+              "  Average R: %+.3f net of fees (a gap through the stop counts at the open)." % m["avg_R"],
+              ""]
+    if h.get("rule"):
+        if h["fired"]:
+            lines.append("History: the same rule (%s) fired %d times in the past data: %d target, %d stop, "
+                         "%d neither. Average R %+.3f net." % (h["rule"], h["fired"], h["target"], h["stop"],
+                                                               h["close"], h["avg_R"]))
+        else:
+            lines.append("History: the same rule (%s) never fired in the past data." % h["rule"])
+    else:
+        lines.append("History: " + h.get("note", "skipped."))
+    lines += ["", doc["verdict"]] + list(doc.get("verdict_notes") or []) + ["", doc["fees"]]
+    lines.append(doc["note"] + " Repeat this run with --seed %d." % m["seed"])
+    return lines
+
+
+# ---------------------------------------------------------------- fan chart (ported from trader-timemachine)
+
+def render_chart(doc, height=17):
+    """ASCII fan chart of the bands: one column per 5-min bar."""
+    p, m = doc["plan"], doc["mc"]
+    bands, times = m["bands"], m["band_times"]
+    lo = min([b[0] for b in bands] + [p["stop"], p["target"]])
+    hi = max([b[4] for b in bands] + [p["stop"], p["target"]])
+    pad = (hi - lo) * 0.04 or 0.01
+    lo, hi = lo - pad, hi + pad
+    step = (hi - lo) / (height - 1)
+
+    def row(price):
+        return max(0, min(height - 1, int(round((hi - price) / step))))
+    grid = [[" "] * len(bands) for _ in range(height)]
+    for j, b in enumerate(bands):
+        r5, r25, r50, r75, r95 = [row(x) for x in b]
+        for r in range(r95, r5 + 1):
+            grid[r][j] = "."
+        for r in range(r75, r25 + 1):
+            grid[r][j] = ":"
+        grid[r50][j] = "*"
+    marks = {row(p["target"]): "target", row(p["stop"]): "stop"}
+    if row(p["entry"]) not in marks:
+        marks[row(p["entry"])] = "entry"
+    for r in (row(p["target"]), row(p["stop"])):
+        grid[r] = ["-" if ch == " " else ch for ch in grid[r]]
+    out = ["%s %s, %s replay paths from the %s entry (seed %d)" % (
+        p["symbol"], p["date"], "{:,}".format(m.get("band_paths", BAND_PATHS)), p.get("entry_time") or "close", m["seed"])]
+    for r in range(height):
+        label = marks.get(r)
+        price = {"target": p["target"], "stop": p["stop"], "entry": p["entry"]}.get(label, hi - r * step)
+        left = ("%9.2f |" % price) if (label or r in (0, height - 1)) else "          |"
+        out.append(left + "".join(grid[r]) + ("  " + label if label else ""))
+    axis = [" "] * len(bands)
+    for j in sorted({0, len(bands) // 2, len(bands) - 1}):
+        lab = times[j]
+        s = max(0, min(j, len(bands) - len(lab)))
+        axis[s:s + len(lab)] = list(lab)
+    out.append("          +" + "-" * len(bands))
+    out.append("           " + "".join(axis))
+    out.append("* median   : middle half of the paths   . 90 % of the paths   - stop and target")
+    return out
+
+
+# ---------------------------------------------------------------- commands
+
+def read_json(path, what):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        raise TMError("no %s at %s" % (what, path))
+    except ValueError as e:
+        raise TMError("%s is not valid JSON: %s" % (path, e))
+
+
+def write_json(path, doc):
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2, ensure_ascii=False, default=str)
+
+
+def cmd_run(a):
+    now = tm.parse_now(a.now)
+    plan = read_json(a.plan, "plan (make one with th-trader-exit: exit.py plan --write)")
+    mode = a.mode or plan.get("mode") or "intraday"
+    plan = dict(plan, mode=mode)
+    if mode == "swing" and not plan.get("days"):
+        plan["days"] = 10
+    cfg = tm.load_config(a.config)
+    if a.offline:
+        series = tm.parse_chart(read_json(a.offline, "chart file"), plan["symbol"])
+    else:
+        series = tm.fetch_chart(plan["symbol"], "5y" if mode == "swing" else "60d", "1d" if mode == "swing" else "5m")
+    until = datetime.datetime.strptime(a.until, "%H:%M").time() if a.until else None
+    doc = run_plan(plan, series, cfg, now, a.replays, a.seed, until)
+    if a.write:
+        write_json(a.write, doc)
+    if a.json:
+        print(json.dumps(doc, indent=2, ensure_ascii=False, default=str))
+        return 0
+    for line in report(doc):
+        print(line)
+    if a.write:
+        print("Wrote %s." % a.write)
+    return 0
+
+
+def cmd_chart(a):
+    doc = read_json(a.from_path, "saved run (timemachine.py run --write)")
+    for line in render_chart(doc):
+        print(line)
+    return 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="Time Machine (th-trader-timemachine): replay a SET trade plan.")
+    sub = ap.add_subparsers(dest="cmd")
+    p = sub.add_parser("run", help="replay th-trader/plan.json")
+    p.add_argument("--plan", default="th-trader/plan.json")
+    p.add_argument("--mode", choices=["intraday", "swing"], help="override the plan's mode")
+    p.add_argument("--replays", type=int, default=10000)
+    p.add_argument("--seed", type=int, default=19)
+    p.add_argument("--until", help="intraday: stop each replay at HH:MM (default the plan's flat_by)")
+    p.add_argument("--offline", metavar="PATH", help="saved Yahoo chart JSON instead of the network")
+    p.add_argument("--config", default="th-trader/config.json")
+    p.add_argument("--now", help='pretend it is this Bangkok time, e.g. "2026-10-30 11:00"')
+    p.add_argument("--write", nargs="?", const="th-trader/timemachine.json", metavar="PATH")
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("chart", help="ASCII fan chart of a saved run")
+    p.add_argument("--from", dest="from_path", default="th-trader/timemachine.json")
+    a = ap.parse_args(argv)
+    if not a.cmd:
+        ap.print_help()
+        return 1
+    try:
+        return {"run": cmd_run, "chart": cmd_chart}[a.cmd](a)
+    except (TMError, tm.MarketError) as e:
+        print("timemachine.py: %s" % e, file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
