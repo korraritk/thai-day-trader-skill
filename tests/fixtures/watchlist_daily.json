@@ -1,0 +1,2 @@
+{"created_by": "th-trader-scanner", "mode": "daily", "as_of": "2026-10-30 close", "currency": "THB",
+ "hits": [{"symbol": "PTT", "setups": ["reclaim_ma20"], "price": 42.0, "close_date": "2026-10-30", "rsi": 52.1}]}

@@ -1,0 +1,4 @@
+{"created_by": "th-trader-scanner", "mode": "orb", "as_of": "2026-10-30 11:00 Bangkok", "currency": "THB",
+ "or_minutes": 15,
+ "hits": [{"symbol": "ADVANC", "setups": ["orb"], "price": 339.0, "at": "10:20", "bar_start": "10:15",
+           "or_high": 338.0, "or_low": 334.0, "pct_over": 0.3}]}

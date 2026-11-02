@@ -182,3 +182,254 @@ def compute(entry, stop_rule, stop_param, target_rule, target_param, day, cfg, o
            "tick_table": tm.tick_table_label(day), "fee_share": share, "warnings": warnings}
     out.update(n)
     return out
+
+
+# ---------------------------------------------------------------- bars for an ATR stop
+
+def atr_of(bars, n=ATR_BARS):
+    """Average true range of the last n bars (all of them if fewer). The first
+    bar uses its own high - low. Ported from trader-exit."""
+    trs, prev = [], None
+    for b in bars:
+        tr = b["h"] - b["l"]
+        if prev is not None:
+            tr = max(tr, abs(b["h"] - prev), abs(b["l"] - prev))
+        trs.append(tr)
+        prev = b["c"]
+    use = trs[-n:]
+    return sum(use) / len(use), len(use)
+
+
+def read_json(path, what):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        raise PlanError("no %s at %s" % (what, path))
+    except ValueError as e:
+        raise PlanError("%s is not valid JSON: %s" % (path, e))
+
+
+def load_series(path, symbol):
+    return tm.parse_chart(read_json(path, "chart file"), symbol)
+
+
+# ---------------------------------------------------------------- gathering the entry
+
+def gather(a, now):
+    """-> dict with symbol, entry, mode, date, entry_time, or_high, or_low, or_minutes, setups, source."""
+    if a.entry is not None:
+        if not a.symbol:
+            raise PlanError("give --symbol with --entry")
+        return {"symbol": a.symbol.upper(), "entry": D(a.entry), "mode": a.mode or "intraday",
+                "date": a.date or now.date().isoformat(), "entry_time": a.time,
+                "or_high": a.or_high, "or_low": a.or_low, "or_minutes": a.or_minutes, "setups": [],
+                "source": "flags"}
+    if a.symbol and os.path.exists(a.watchlist):
+        doc = read_json(a.watchlist, "watchlist")
+        hit = next((h for h in doc.get("hits", []) if h.get("symbol", "").upper() == a.symbol.upper()), None)
+        if hit:
+            if doc.get("mode") == "orb":
+                return {"symbol": hit["symbol"], "entry": D(hit["price"]), "mode": a.mode or "intraday",
+                        "date": str(doc.get("as_of") or now.date().isoformat()).split()[0],
+                        "entry_time": hit.get("at"), "or_high": hit.get("or_high"), "or_low": hit.get("or_low"),
+                        "or_minutes": doc.get("or_minutes", a.or_minutes), "setups": hit.get("setups", []),
+                        "source": a.watchlist}
+            return {"symbol": hit["symbol"], "entry": D(hit["price"]), "mode": a.mode or "swing",
+                    "date": hit.get("close_date") or now.date().isoformat(), "entry_time": None,
+                    "or_high": None, "or_low": None, "or_minutes": a.or_minutes, "setups": hit.get("setups", []),
+                    "source": a.watchlist}
+    if os.path.exists(a.entry_file):
+        doc = read_json(a.entry_file, "entry file")
+        if not a.symbol or doc.get("symbol", "").upper() == a.symbol.upper():
+            if not doc.get("triggered"):
+                raise PlanError("%s has not triggered yet: wait for the entry, or give --entry" % a.entry_file)
+            return {"symbol": doc["symbol"], "entry": D(doc["price"]), "mode": a.mode or "intraday",
+                    "date": doc.get("date") or now.date().isoformat(), "entry_time": doc.get("at"),
+                    "or_high": doc.get("or_high"), "or_low": doc.get("or_low"),
+                    "or_minutes": doc.get("or_minutes", a.or_minutes), "setups": doc.get("setups", []),
+                    "source": a.entry_file}
+    raise PlanError("no entry to plan from: give --symbol with a hit in %s, an entry in %s, or --entry"
+                    % (a.watchlist, a.entry_file))
+
+
+# ---------------------------------------------------------------- the plan document
+
+def s2(x):
+    return str(Decimal(x).quantize(Decimal("0.01")))
+
+
+def s4(x):
+    return str(Decimal(x).quantize(Decimal("0.0001")))
+
+
+def market_context(a, g, day, swing, stop_rule, now):
+    """-> (prev_close or None, atr or None, notes). Yahoo or saved charts."""
+    notes = []
+    if a.no_fetch:
+        return None, None, ["Yahoo not asked (--no-fetch): today's floor and ceiling were not checked."]
+    prev_close = atr = None
+    try:
+        daily = load_series(a.offline_daily, g["symbol"]) if a.offline_daily else tm.fetch_chart(g["symbol"], "3mo", "1d")
+        dbars = [b for b in tm.daily_bars(daily, now) if b["date"] < day]
+        prev_close = D(dbars[-1]["c"]) if dbars else None
+        if stop_rule == "atr" and swing and dbars:
+            atr = atr_of(dbars)[0]
+        if stop_rule == "atr" and not swing:
+            s5 = load_series(a.offline_5m, g["symbol"]) if a.offline_5m else tm.fetch_chart(g["symbol"], "5d", "5m")
+            t = datetime.datetime.strptime(g["entry_time"] or "16:30", "%H:%M").time()
+            ibars = tm.intraday_bars(s5, day, datetime.datetime.combine(day, t))
+            atr = atr_of(ibars)[0] if ibars else None
+    except tm.FetchError as e:
+        notes.append("Yahoo gave no chart (%s): today's floor and ceiling were not checked." % e)
+    if swing:
+        prev_close = None  # a swing plan spans days: one day's limits do not bound it
+        notes.append("Swing plan: the daily +/-30% limits apply day by day, not to the whole plan.")
+    return prev_close, atr, notes
+
+
+def build_plan(a, now):
+    cfg = tm.load_config(a.config)
+    g = gather(a, now)
+    day = datetime.date.fromisoformat(g["date"])
+    swing = g["mode"] == "swing"
+    stop_text = a.stop or ("pct:5" if swing else "or-mid")
+    target_text = a.target or "2R"
+    stop_rule, stop_param = parse_stop(stop_text)
+    target_rule, target_param = parse_target(target_text)
+    prev_close, atr, notes = market_context(a, g, day, swing, stop_rule, now)
+    c = compute(g["entry"], stop_rule, stop_param, target_rule, target_param, day, cfg,
+                or_high=g["or_high"], or_low=g["or_low"], atr=atr, prev_close=prev_close)
+    plan = {"created_by": "th-trader-exit", "created_at": now.strftime("%Y-%m-%dT%H:%M:%S+07:00"),
+            "symbol": g["symbol"], "mode": g["mode"], "date": g["date"], "entry_time": g["entry_time"],
+            "entry": s2(c["entry"]), "stop": s2(c["stop"]), "stop_rule": stop_text.lower(),
+            "stop_label": c["stop_label"], "stop_detail": c["stop_detail"],
+            "target": s2(c["target"]), "target_rule": target_text.upper() if target_rule == "r" else target_text,
+            "target_label": c["target_label"],
+            "target_r": float(target_param) if target_rule == "r" else float(round(c["gross_r"], 4)),
+            "risk_per_share": s4(c["risk_per_share"]), "reward_per_share": s4(c["reward_per_share"]),
+            "fee_round_trip_per_share": s4(c["fee_at_stop"]), "fee_share_of_stop": float(round(c["fee_share"], 4)),
+            "gross_r": float(round(c["gross_r"], 4)), "net_r": float(round(c["net_r"], 4)),
+            "or_high": g["or_high"], "or_low": g["or_low"], "or_minutes": g["or_minutes"], "setups": g["setups"],
+            "prev_close": s2(prev_close) if prev_close is not None else None,
+            "tick_table": c["tick_table"], "currency": "THB", "source": g["source"],
+            "commission_pct": cfg["commission_pct"]}
+    if swing:
+        plan["days"] = a.days
+    else:
+        plan["flat_by"] = a.flat_by or cfg["flat_by"]
+    return plan, c["warnings"], notes
+
+
+def describe(plan):
+    day = datetime.date.fromisoformat(plan["date"])
+    e = Decimal(plan["entry"])
+    kind = "intraday" if plan["mode"] == "intraday" else "swing, up to %d trading days" % plan["days"]
+    out = ["Exit plan: %s long, %s, %s" % (plan["symbol"], day.strftime("%a %Y-%m-%d"), kind)]
+    when = (" at %s" % plan["entry_time"]) if plan.get("entry_time") else ""
+    out.append("  Entry         %s%s" % (baht(plan["entry"]), when))
+    out.append("  Stop          %s  %s%s" % (baht(plan["stop"]), plan["stop_label"],
+                                             (": " + plan["stop_detail"]) if plan.get("stop_detail") else ""))
+    out.append("  Target        %s  %s" % (baht(plan["target"]), plan["target_label"]))
+    out.append("  Risk a share  %s with fees (%s%% of the entry)"
+               % (plan["risk_per_share"], (Decimal(plan["risk_per_share"]) / e * 100).quantize(Decimal("0.01"))))
+    share = Decimal(str(plan["fee_share_of_stop"])) * 100
+    out.append("  Fees          %s a share round trip = %s%% of the stop distance%s"
+               % (plan["fee_round_trip_per_share"], share.quantize(Decimal("1")), "  (!)" if share >= 25 else ""))
+    out.append("  R             %s gross, %s net of fees" % (ratio(plan["gross_r"]), ratio(plan["net_r"])))
+    if plan["mode"] == "intraday":
+        out.append("  Flat by       %s Bangkok, win or lose: no overnight hold" % plan["flat_by"])
+    out.append("Set before the entry. If price hits the stop, you are out; never move it further away.")
+    out.append(NOTE)
+    return out
+
+
+# ---------------------------------------------------------------- commands
+
+def write_json(path, doc):
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+
+
+def cmd_plan(a):
+    now = tm.parse_now(a.now)
+    plan, warnings, notes = build_plan(a, now)
+    if a.write:
+        write_json(a.write, plan)
+    if a.json:
+        print(json.dumps(dict(plan, warnings=warnings, notes=notes), indent=2, ensure_ascii=False))
+        return 0
+    for line in describe(plan):
+        print(line)
+    for w in warnings:
+        print("Warning: " + w)
+    for n in notes:
+        print("Note: " + n)
+    print(tm.fees_line(tm.load_config(a.config)))
+    if "fallback" in plan["tick_table"]:
+        print(tm.TICK_FALLBACK_NOTE)
+    if a.write:
+        print("Wrote %s." % a.write)
+    print("Next: th-trader-timemachine replays it, then th-trader-budget sizes it. Nothing was placed.")
+    return 0
+
+
+def cmd_show(a):
+    if not os.path.exists(a.plan):
+        print("No plan at %s yet. Make one: exit.py plan --write" % a.plan)
+        return 1
+    plan = read_json(a.plan, "plan")
+    if a.json:
+        print(json.dumps(plan, indent=2, ensure_ascii=False))
+        return 0
+    for line in describe(plan):
+        print(line)
+    return 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="Exit Planner (th-trader-exit): the stop and target before the entry.")
+    sub = ap.add_subparsers(dest="cmd")
+    p = sub.add_parser("plan", help="set the stop and target")
+    p.add_argument("--symbol")
+    p.add_argument("--entry", help="entry price (instead of a watchlist hit or entry.json)")
+    p.add_argument("--or-high")
+    p.add_argument("--or-low")
+    p.add_argument("--or-minutes", type=int, default=15)
+    p.add_argument("--mode", choices=["intraday", "swing"])
+    p.add_argument("--days", type=int, default=10, help="swing: trading days to hold at most (10)")
+    p.add_argument("--date", help="session date YYYY-MM-DD (default: the hit's, or today)")
+    p.add_argument("--time", help="entry time HH:MM Bangkok")
+    p.add_argument("--stop", help="or-mid (intraday default), or-low, price:X, pct:X (swing default pct:5), atr:K")
+    p.add_argument("--target", help="2R (default), 1R, 1.5R, price:X")
+    p.add_argument("--flat-by", help="HH:MM Bangkok (default: config flat_by, 16:20)")
+    p.add_argument("--watchlist", default="th-trader/watchlist.json")
+    p.add_argument("--entry-file", default="th-trader/entry.json")
+    p.add_argument("--config", default="th-trader/config.json")
+    p.add_argument("--offline-daily", metavar="PATH", help="saved Yahoo daily chart (prev close, swing ATR)")
+    p.add_argument("--offline-5m", metavar="PATH", help="saved Yahoo 5-minute chart (intraday ATR)")
+    p.add_argument("--no-fetch", action="store_true", help="do not ask Yahoo (no floor/ceiling check, no ATR)")
+    p.add_argument("--now", help='pretend it is this Bangkok time, e.g. "2026-10-30 10:25"')
+    p.add_argument("--write", nargs="?", const="th-trader/plan.json", metavar="PATH",
+                   help="save the plan (default th-trader/plan.json)")
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("show", help="print the current plan")
+    p.add_argument("--plan", default="th-trader/plan.json")
+    p.add_argument("--json", action="store_true")
+    a = ap.parse_args(argv)
+    if not a.cmd:
+        ap.print_help()
+        return 1
+    try:
+        return {"plan": cmd_plan, "show": cmd_show}[a.cmd](a)
+    except (PlanError, tm.MarketError) as e:
+        print("exit.py: %s" % e, file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
