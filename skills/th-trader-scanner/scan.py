@@ -340,15 +340,25 @@ def orb_window(now, at, or_minutes, until, explicit_day=None):
 
 
 def latest_bar_end(data, symbols, day, cutoff):
-    """The end of the latest complete bar any symbol has at the cutoff, or None."""
+    """The end of the latest complete bar any symbol has at the cutoff, or None. Spark leaves
+    out bars whose close did not change, so the last trade time in meta counts too: the bar
+    it falls in is still forming, so the latest complete one ends at its 5-minute floor."""
     step = datetime.timedelta(minutes=BAR_MIN)
+    grid_ends = {s + step for s in tm.slots(day, BAR_MIN)}
     ends = []
     for sym in symbols:
         s = data.get(sym)
-        if s:
-            bars = tm.intraday_bars(s, day, cutoff, BAR_MIN)
-            if bars:
-                ends.append(bars[-1]["start"] + step)
+        if not s:
+            continue
+        bars = tm.intraday_bars(s, day, cutoff, BAR_MIN)
+        if bars:
+            ends.append(bars[-1]["start"] + step)
+        rmt = (s.get("meta") or {}).get("regularMarketTime")
+        if rmt:
+            t = tm.ts_to_bkk(rmt)
+            floor = t.replace(minute=t.minute - t.minute % BAR_MIN, second=0, microsecond=0)
+            if t.date() == day and floor <= cutoff and floor in grid_ends:
+                ends.append(floor)
     return max(ends) if ends else None
 
 

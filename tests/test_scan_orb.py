@@ -1,3 +1,4 @@
+import calendar
 import json
 import os
 from datetime import date, datetime, time
@@ -71,6 +72,17 @@ def test_spark_gaps_in_stage_1_are_not_unusable():
                                          confirm=lambda sym: asked.append(sym) or full)
     assert counts["unusable"] == 0 and counts["scanned"] == 1
     assert failed == {}
+
+
+def test_latest_bar_end_uses_the_last_trade_time_when_spark_skips_flat_bars():
+    """Spark leaves out the last bars when the close did not change; meta still has the last trade."""
+    full = ptt_series()
+    keep = [i for i, t in enumerate(full["t"]) if tm.ts_to_bkk(t) <= datetime(2026, 10, 30, 10, 30)]
+    last_trade = calendar.timegm(datetime(2026, 10, 30, 3, 47, 22).timetuple())  # 10:47:22 Bangkok
+    spark = {"t": [full["t"][i] for i in keep], "c": [full["c"][i] for i in keep], "o": None, "h": None,
+             "l": None, "v": None, "meta": {"regularMarketTime": last_trade}}
+    end = scan.latest_bar_end({"PTT": spark}, ["PTT"], DAY, datetime(2026, 10, 30, 11, 0))
+    assert end == datetime(2026, 10, 30, 10, 45)
 
 
 def test_stale_minutes():
