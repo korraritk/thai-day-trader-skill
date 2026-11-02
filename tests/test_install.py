@@ -32,6 +32,20 @@ def test_installs_a_standalone_skill(tmp_path):
     assert json.loads(run.stdout)["currency"] == "THB"
 
 
+def test_every_skill_is_standalone(tmp_path):
+    assert install(tmp_path).returncode == 0
+    names = sorted(p.name for p in tmp_path.iterdir())
+    assert names == ["th-trader-budget", "th-trader-exit", "th-trader-risk", "th-trader-scanner", "th-trader-timemachine"]
+    for name in names:
+        for f in ("SKILL.md", "th_market.py", "setups.py", "data/set-holidays.json", ".installed-from-thaitraderskills"):
+            assert (tmp_path / name / f).exists(), (name, f)
+    run = subprocess.run([sys.executable, str(tmp_path / "th-trader-exit" / "exit.py"), "plan", "--symbol", "X",
+                          "--entry", "42.25", "--or-high", "42.25", "--or-low", "41.5", "--no-fetch", "--json"],
+                         capture_output=True, text=True, cwd=str(tmp_path))
+    assert run.returncode == 0, run.stderr
+    assert json.loads(run.stdout)["stop"] == "41.75"
+
+
 def test_reinstall_replaces_its_own_copy(tmp_path):
     assert install(tmp_path).returncode == 0
     (tmp_path / "th-trader-scanner" / "stale.txt").write_text("old", encoding="utf-8")
