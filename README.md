@@ -11,9 +11,30 @@ skills stay installed and untouched; these install as `th-trader-*`.
 | `th-trader-timemachine` | 10,000 replays of the plan from the stock's own 5-minute or daily bars, plus the same rule on past days |
 | `th-trader-budget` | How many shares, in board lots, fit the budget and the max loss; an order ticket to type into the broker app |
 | `th-trader-risk` | PASS or BLOCK against your rules, and a log of the trades you made |
+| `th-trader-entry` | When an opening-range or level breakout triggered, bar by bar, and how far behind Yahoo's data is |
+| `th-trader-alerts` | Stop, target, price, % move and clock alerts, in Claude and on Telegram; SET open/lunch/closed; `prices.json` |
+| `th-trader-news` | Thai stock news from ข่าวหุ้น and อินโฟเควสท์ RSS, matched to your symbols and tagged |
 
-The usual chain: `scan.py orb` → `exit.py plan --symbol X --write` → `timemachine.py run` →
-`size.py --write` → `check.py` → you place the order yourself → `check.py log buy ...`.
+The full chain:
+
+1. `scan.py orb` (scanner) → `entry.py watch X` (entry) → `exit.py plan --write` (exit)
+2. `timemachine.py run` → `alerts.py quote X --write` → `size.py --write` (budget) → `check.py` (risk)
+3. You place the order yourself in your broker's app → `check.py log buy ...`
+4. `alerts.py add --from-plan`, then `alerts.py check` every few minutes (`/loop 5m`) until you are flat
+5. `news.py` any time, for what touches your symbols
+
+## Telegram
+
+Entry and alerts (and `news.py --telegram`) send to your own bot. Set two
+environment variables in your own terminal, then restart Claude Code:
+
+```powershell
+setx TH_TRADER_TELEGRAM_TOKEN "123456:ABC..."     # from @BotFather
+setx TH_TRADER_TELEGRAM_CHAT_ID "987654321"       # your chat id with the bot
+```
+
+Without them everything still prints, with one line saying Telegram is not set
+up. The token is never written to a file or printed.
 
 Every Thai market rule (Bangkok time, SET holidays and sessions, tick sizes,
 price limits, board lot, fees) lives in `shared/th_market.py` and `shared/data/`.
