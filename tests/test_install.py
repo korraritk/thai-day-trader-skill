@@ -35,8 +35,8 @@ def test_installs_a_standalone_skill(tmp_path):
 def test_every_skill_is_standalone(tmp_path):
     assert install(tmp_path).returncode == 0
     names = sorted(p.name for p in tmp_path.iterdir())
-    assert names == ["th-trader-alerts", "th-trader-budget", "th-trader-entry", "th-trader-exit", "th-trader-risk", "th-trader-scanner",
-                     "th-trader-timemachine"]
+    assert names == ["th-trader-alerts", "th-trader-budget", "th-trader-entry", "th-trader-exit", "th-trader-news", "th-trader-risk",
+                     "th-trader-scanner", "th-trader-timemachine"]
     for name in names:
         for f in ("SKILL.md", "th_market.py", "setups.py", "data/set-holidays.json", ".installed-from-thaitraderskills"):
             assert (tmp_path / name / f).exists(), (name, f)
