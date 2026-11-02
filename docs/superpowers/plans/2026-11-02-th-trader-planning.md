@@ -28,7 +28,7 @@
 
 - Standard library only in skills. `python`, never `python3`. `Decimal` for prices, fees and money. Naive Bangkok datetimes.
 - Config defaults (all optional keys):
-  - fees: `commission_pct` 0.157, `market_fees_pct` 0.007, `vat_pct` 7
+  - fees: `commission_pct` 0.15, `market_fees_pct` 0.007, `vat_pct` 7
   - money: `budget_thb` 100000, `max_loss_per_trade_thb` 500, `max_position_pct` 50, `cash_buffer_pct` 10, `max_daily_loss_thb` 1500
   - limits: `max_trades_per_day` 3, `min_reward_risk` 1.5, `blocked` []
   - times: `flat_by` "16:20", `no_entries_after` "15:30"
@@ -93,17 +93,17 @@ Every new script finds `th_market` and `setups` the way `scan.py` does: its own 
 ```python
 def test_one_side_fee():
     cfg = tm.load_config("nonexistent.json")
-    assert tm.fee(D("12675"), cfg).quantize(D("0.01")) == D("22.24")   # 12,675 x 0.164% x 1.07
+    assert tm.fee(D("12675"), cfg).quantize(D("0.01")) == D("21.29")   # 12,675 x 0.157% x 1.07
 
 def test_round_trip_per_share():
     cfg = tm.load_config("nonexistent.json")
-    assert tm.round_trip_fee_per_share(D("42.25"), D("41.75"), cfg).quantize(D("0.0001")) == D("0.1474")
+    assert tm.round_trip_fee_per_share(D("42.25"), D("41.75"), cfg).quantize(D("0.0001")) == D("0.1411")
 
 def test_plan_numbers():
     n = tm.plan_numbers(D("42.25"), D("41.75"), D("43.25"), tm.load_config("nonexistent.json"))
     assert n["gross_r"] == D("2")
-    assert n["risk_per_share"].quantize(D("0.0001")) == D("0.6474")
-    assert n["net_r"].quantize(D("0.01")) == D("1.31")
+    assert n["risk_per_share"].quantize(D("0.0001")) == D("0.6411")
+    assert n["net_r"].quantize(D("0.01")) == D("1.34")
 
 def test_config_override_and_bad_type(tmp_path):
     p = tmp_path / "c.json"
@@ -114,7 +114,7 @@ def test_config_override_and_bad_type(tmp_path):
         tm.load_config(str(p))
 
 def test_fees_line_names_rates():
-    assert "0.157%" in tm.fees_line(tm.load_config("nonexistent.json"))
+    assert "0.15%" in tm.fees_line(tm.load_config("nonexistent.json"))
 
 def test_setups_module_is_the_scanner_math():
     import setups, scan
@@ -189,10 +189,10 @@ def test_refusals():
     with pytest.raises(exit_.PlanError, match="floor"):
         exit_.compute(D("42.25"), "price", D("29.00"), "R", D("1"), DAY, CFG, prev_close=D("42.00"))
     with pytest.raises(exit_.PlanError, match="fee"):
-        exit_.compute(D("1.50"), "price", D("1.49"), "R", D("2"), DAY, CFG)   # fee ~0.0035 x 2 vs 0.01 risk
+        exit_.compute(D("1.50"), "price", D("1.49"), "R", D("2"), DAY, CFG)   # round-trip fee 0.0050 = 50.2% of the 0.01 risk
 
 def test_fee_warning_between_25_and_50():
-    p = exit_.compute(D("42.25"), "price", D("41.75"), "R", D("2"), DAY, CFG)   # fees 29% of the 0.50 risk
+    p = exit_.compute(D("42.25"), "price", D("41.75"), "R", D("2"), DAY, CFG)   # fees 28% of the 0.50 risk
     assert any("fee" in w for w in p["warnings"])
 ```
 
@@ -357,7 +357,7 @@ Rules:
 Rules (spec Part 4): each limit's shares are floored to the lot. Zero lots → `SizeError` naming the THB loss of one lot. Net R at the sizing price below `min_reward_risk` → `SizeError`.
 
 - [ ] **Step 1: Write the failing tests**, one case each:
-  - max loss decides: entry 42.25, stop 41.75, defaults → 700 shares (500 / 0.6474 = 772 → 700)
+  - max loss decides: entry 42.25, stop 41.75, defaults → 700 shares (500 / 0.6411 = 779 → 700)
   - position cap decides: a tight stop on a high-priced stock (cap 50,000 / 339 = 147 → 100)
   - cash decides: `cash_buffer_pct` 60 with a tiny stop
   - zero lots refuses, and the message has the one-lot loss in THB

@@ -28,7 +28,10 @@ The rules of part 1 hold here too:
 
 - Yahoo v8 `range=5y&interval=1d` for PTT.BK: 1,210 daily bars from 2021-11-02 to 2026-10-30, every bar with a volume.
 - Yahoo v8 `range=60d&interval=5m`: 59 sessions. Sessions with all 60 bars: PTT 59, SINGER 9, AU 0, TKS 0. Yahoo leaves out a 5-minute bar when nothing traded in it, so thinly traded stocks rarely have a complete session.
-- Fee rates in `thai-investment-analysis` `references/market-and-tax.md`: trading fee 0.005%, clearing 0.001%, SEC fee 0.001%, VAT on fees. All UNVERIFIED. Commission is negotiated per broker.
+- Fee rates, checked on 2026-11-02 at the user's request to use current Thai market standards:
+  - **Market fees: VERIFIED.** SET trading fee 0.005%, TCH clearing fee 0.001% (capped at THB 350 per order, which matters only above about THB 35 million an order, so it is not modelled), and regulatory (SEC) fee 0.001%, with VAT on the fees. Sources: [Kasikorn Securities fee page](https://www.kasikornsecurities.com/en/startinvesting/fee/thai-stocks), [SET TCH clearing services](https://www.set.or.th/en/tch/services/equities-bond/services).
+  - **VAT 7%.** The cabinet extended the reduced rate to 30 September 2027 (Royal Decree No. 807). Re-check by then. Source: [Nation Thailand](https://nationthailand.com/news/policy/40069105).
+  - **Commission.** Negotiated per broker; there is no market standard. 0.15% is a common online cash-balance rate for up to THB 5 million a day ([DAOL Securities](https://www.daolsecurities.co.th/product-and-services/onshore-securities-trading/onshores-onshores/onshores-commission); Kasikorn's online rates run 0.10–0.20%). The 0.157% first proposed is one broker's rate in a high-value tier, so it is not used.
 
 ## Part 1: shared config and fees (additions to `th_market.py`)
 
@@ -36,7 +39,7 @@ The rules of part 1 hold here too:
 
 | Key | Default | Used by |
 |---|---|---|
-| `commission_pct` | 0.157 (per side, before VAT) | all |
+| `commission_pct` | 0.15 (per side, before VAT: a common online cash-balance rate for up to THB 5 million a day) | all |
 | `market_fees_pct` | 0.007 (trading 0.005 + clearing 0.001 + SEC 0.001) | all |
 | `vat_pct` | 7 | all |
 | `budget_thb` | 100000 | budget, risk |
@@ -55,7 +58,7 @@ New functions:
 - `load_config(path="th-trader/config.json") -> dict`: the file's keys over the defaults. A key with the wrong type stops with a plain message naming it.
 - `fee(value_thb, cfg) -> Decimal`: one side's fee: value × (commission_pct + market_fees_pct) / 100 × (1 + vat_pct / 100).
 - `round_trip_fee_per_share(entry, exit_price, cfg) -> Decimal`: `fee(entry) + fee(exit_price)` for one share.
-- `fees_line(cfg) -> str`: the rates in one line, e.g. "Fees: commission 0.157% + market 0.007% + VAT 7% per side (check against your broker)". Every skill in this part prints it.
+- `fees_line(cfg) -> str`: the rates in one line, e.g. "Fees: commission 0.15% + market 0.007% + VAT 7% per side (set commission_pct to your broker's rate)". Every skill in this part prints it.
 
 How fees are counted:
 
@@ -223,7 +226,7 @@ tests/                              + one test file per script, fixtures for the
 
 **Fees and config:**
 
-- `fee` and `round_trip_fee_per_share` against hand-computed values. Example: THB 42.25 × 300 = 12,675; one side = 12,675 × 0.164% × 1.07 = 22.24.
+- `fee` and `round_trip_fee_per_share` against hand-computed values. Example: THB 42.25 × 300 = 12,675; one side = 12,675 × 0.157% × 1.07 = 21.29.
 - Config defaults, overrides, and a wrong-type key.
 
 **Exit:**
@@ -266,6 +269,6 @@ tests/                              + one test file per script, fixtures for the
 
 ## Open items
 
-- The fee rates are UNVERIFIED defaults. The user should set `commission_pct` to their broker's rate.
+- `commission_pct` is a typical rate, not the user's. The user should set it to their broker's rate. VAT 7% is due for re-check by 2027-09-30.
 - The tick table from 2026-11-16 is still missing; the part 1 fallback applies.
 - Part 3 (`th-trader-entry`, `th-trader-alerts`, `th-trader-news`) will write `entry.json` and a price file the budget and the risk check can read. Until then, `--price` stands in for a fresh price.
