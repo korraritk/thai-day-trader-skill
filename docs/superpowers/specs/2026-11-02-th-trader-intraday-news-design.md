@@ -48,7 +48,7 @@ The rules of parts 1 and 2 hold:
 
 `{"created_at", "prices": {"PTT": {"price", "prev_close", "time", "source": "yahoo", "delay_note"}}}`
 
-- **Read by budget:** `size.py` uses a fresh price (under 15 minutes old, by its `time`) the way `--price` does, when it is above the plan's entry.
+- **Read by budget:** `size.py` uses a fresh price (fetched under 15 minutes ago, by the file's `created_at`; Yahoo's own `time` runs 15–30 minutes behind, so it would reject nearly every quote) the way `--price` does, when it is above the plan's entry. A file without `created_at` falls back to `time`.
 - **Read by risk:** `check.py` takes `prev_close` from it for the floor/ceiling row when `--prev-close` is not given.
 - Both say which source they used.
 

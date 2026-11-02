@@ -146,7 +146,7 @@ def main(argv=None):
     ap.add_argument("--config", default="th-trader/config.json")
     ap.add_argument("--price", help="the latest price, when it ran above the plan's entry")
     ap.add_argument("--prices", default="th-trader/prices.json",
-                    help="latest prices from th-trader-alerts (quote --write); used when under 15 minutes old")
+                    help="latest prices from th-trader-alerts (quote --write); used when fetched under 15 minutes ago")
     ap.add_argument("--now", help='pretend it is this Bangkok time, e.g. "2026-11-02 11:00"')
     ap.add_argument("--lot", type=int, help="board lot: 100 (default) or 50")
     ap.add_argument("--write", nargs="?", const="th-trader/orders.json", metavar="PATH")
@@ -164,11 +164,14 @@ def main(argv=None):
             sym = str(plan.get("symbol") or "").upper()
             fresh = tm.read_prices(a.prices, now).get(sym)
             if fresh:
-                price, price_from = fresh["price"], "the latest price from prices.json (%s)" % fresh["time"].strftime("%H:%M")
+                when = "fetched " + fresh["fetched_at"].strftime("%H:%M")
+                if fresh["time"].strftime("%H:%M") != fresh["fetched_at"].strftime("%H:%M"):
+                    when += ", Yahoo data from " + fresh["time"].strftime("%H:%M")
+                price, price_from = fresh["price"], "the latest price from prices.json (%s)" % when
             else:
                 age = tm.prices_age_minutes(a.prices, sym, now)
                 if age is not None:
-                    notes.append("%s is %d minutes old: not used" % (os.path.basename(a.prices), age))
+                    notes.append("%s was fetched %d minutes ago: not used" % (os.path.basename(a.prices), age))
         s = size_trade(plan, cfg, price=price, lot=a.lot, price_from=price_from)
     except (SizeError, tm.MarketError, ValueError) as e:
         print("size.py: %s" % e, file=sys.stderr)

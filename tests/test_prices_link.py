@@ -9,10 +9,11 @@ import th_market as tm
 NOW = datetime(2026, 11, 2, 11, 0)
 
 
-def write_prices(path, price="42.50", prev_close="42.00", at="2026-11-02T10:50:00+07:00"):
+def write_prices(path, price="42.50", prev_close="42.00", at="2026-11-02T10:50:00+07:00", data_time=None):
+    """at = when quote --write fetched; data_time = Yahoo's own time for the price (default: the same)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"created_at": at, "prices": {"PTT": {
-        "price": price, "prev_close": prev_close, "time": at, "source": "yahoo",
+        "price": price, "prev_close": prev_close, "time": data_time or at, "source": "yahoo",
         "delay_note": "data ~15 min behind"}}}), encoding="utf-8")
 
 
@@ -23,6 +24,23 @@ def test_read_prices_fresh_and_stale(tmp_path):
     assert got["PTT"]["price"] == D("42.50") and got["PTT"]["prev_close"] == D("42.00")
     assert got["PTT"]["time"] == datetime(2026, 11, 2, 10, 50)
     assert tm.read_prices(str(p), datetime(2026, 11, 2, 11, 10)) == {}  # twenty minutes old
+
+
+def test_read_prices_age_is_from_the_fetch_not_yahoos_time(tmp_path):
+    p = tmp_path / "prices.json"
+    write_prices(p, at="2026-11-02T10:50:00+07:00", data_time="2026-11-02T10:20:00+07:00")  # Yahoo 30 min behind
+    got = tm.read_prices(str(p), NOW)
+    assert got["PTT"]["fetched_at"] == datetime(2026, 11, 2, 10, 50)
+    assert got["PTT"]["time"] == datetime(2026, 11, 2, 10, 20)
+    assert tm.prices_age_minutes(str(p), "PTT", NOW) == 10
+
+
+def test_read_prices_without_created_at_falls_back_to_the_entry_time(tmp_path):
+    p = tmp_path / "prices.json"
+    p.write_text(json.dumps({"prices": {"PTT": {"price": "42.50", "prev_close": "42.00",
+                                                 "time": "2026-11-02T10:20:00+07:00"}}}), encoding="utf-8")
+    assert tm.read_prices(str(p), NOW) == {}
+    assert tm.prices_age_minutes(str(p), "PTT", NOW) == 40
 
 
 def test_read_prices_missing_file(tmp_path):
@@ -43,7 +61,17 @@ def test_size_uses_a_fresh_price(tmp_path, monkeypatch, capsys):
     write_prices(tmp_path / "th-trader" / "prices.json")
     assert size.main(["--now", "2026-11-02 11:00"]) == 0
     out = capsys.readouterr().out
-    assert "Sized at 42.50" in out and "the latest price from prices.json (10:50)" in out
+    assert "Sized at 42.50" in out and "the latest price from prices.json (fetched 10:50)" in out
+
+
+def test_size_uses_a_fresh_fetch_of_delayed_data(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    plan_file(tmp_path)
+    write_prices(tmp_path / "th-trader" / "prices.json", data_time="2026-11-02T10:20:00+07:00")
+    assert size.main(["--now", "2026-11-02 11:00"]) == 0
+    out = capsys.readouterr().out
+    assert "Sized at 42.50" in out
+    assert "the latest price from prices.json (fetched 10:50, Yahoo data from 10:20)" in out
 
 
 def test_size_ignores_a_stale_price(tmp_path, monkeypatch, capsys):
@@ -52,7 +80,7 @@ def test_size_ignores_a_stale_price(tmp_path, monkeypatch, capsys):
     write_prices(tmp_path / "th-trader" / "prices.json", at="2026-11-02T10:30:00+07:00")
     assert size.main(["--now", "2026-11-02 11:00"]) == 0
     out = capsys.readouterr().out
-    assert "prices.json is 30 minutes old: not used" in out
+    assert "prices.json was fetched 30 minutes ago: not used" in out
     assert "Sized at 42.25" in out
 
 

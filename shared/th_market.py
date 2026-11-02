@@ -403,8 +403,10 @@ def iso_bkk(dt):
 
 
 def read_prices(path, now, max_age_min=15):
-    """th-trader/prices.json (from th-trader-alerts quote --write) -> {SYM: {price, prev_close, time}},
-    entries no older than max_age_min minutes by their own time (None = any age). A missing file is {}."""
+    """th-trader/prices.json (from th-trader-alerts quote --write) -> {SYM: {price, prev_close, time, fetched_at}},
+    entries fetched no more than max_age_min minutes ago (None = any age). Age runs from the file's
+    created_at, when quote --write fetched, not from time, which is Yahoo's own and runs 15-30 minutes
+    behind; a file without created_at falls back to time. A missing file is {}."""
     if not path or not os.path.exists(path):
         return {}
     try:
@@ -412,6 +414,10 @@ def read_prices(path, now, max_age_min=15):
             doc = json.load(fh)
     except ValueError as e:
         raise MarketError("%s is not valid JSON: %s" % (path, e))
+    try:
+        fetched = parse_iso_bkk((doc or {})["created_at"])
+    except (KeyError, TypeError, ValueError):
+        fetched = None
     out = {}
     for sym, p in ((doc or {}).get("prices") or {}).items():
         try:
@@ -420,16 +426,17 @@ def read_prices(path, now, max_age_min=15):
             prev = Decimal(str(p["prev_close"])) if p.get("prev_close") not in (None, "") else None
         except (KeyError, TypeError, ValueError, ArithmeticError):
             continue
-        if max_age_min is not None and (now - at).total_seconds() > max_age_min * 60:
+        got = fetched or at
+        if max_age_min is not None and (now - got).total_seconds() > max_age_min * 60:
             continue
-        out[sym.upper()] = {"price": price, "prev_close": prev, "time": at}
+        out[sym.upper()] = {"price": price, "prev_close": prev, "time": at, "fetched_at": got}
     return out
 
 
 def prices_age_minutes(path, symbol, now):
-    """Minutes since symbol's entry in prices.json, or None when there is none."""
+    """Minutes since symbol's entry in prices.json was fetched, or None when there is none."""
     got = read_prices(path, now, max_age_min=None).get(symbol.upper())
-    return None if got is None else int((now - got["time"]).total_seconds() // 60)
+    return None if got is None else int((now - got["fetched_at"]).total_seconds() // 60)
 
 
 def require_fetched(n_fetched, n_requested, failed):
