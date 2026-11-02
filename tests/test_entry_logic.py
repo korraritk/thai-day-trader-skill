@@ -76,3 +76,8 @@ def test_delay_fields(series):
 def test_level_setup_needs_a_level(series):
     with pytest.raises(entry.EntryError):
         entry.evaluate(series, D29, at(D29, "11:30"), setup="level")
+
+
+def test_lunch_does_not_count_as_behind(series):
+    r = entry.evaluate(series, D30, at(D30, "13:00"))
+    assert r["data_to"] == "12:30" and r["behind_minutes"] == 0
