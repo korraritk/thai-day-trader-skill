@@ -360,6 +360,50 @@ def fetch_chart(symbol, rng, interval):
     return parse_chart(yahoo_get(chart_path(symbol, rng, interval)), symbol)
 
 
+def parse_iso_bkk(text):
+    """"2026-11-02T10:50:00+07:00" (or without the offset) -> naive Bangkok time."""
+    t = str(text).strip()
+    if t.endswith("+07:00"):
+        t = t[:-6]
+    elif t.endswith("Z"):
+        return to_bkk(datetime.datetime.fromisoformat(t[:-1]))
+    return datetime.datetime.fromisoformat(t.replace(" ", "T")).replace(tzinfo=None)
+
+
+def iso_bkk(dt):
+    return dt.strftime("%Y-%m-%dT%H:%M:%S+07:00")
+
+
+def read_prices(path, now, max_age_min=15):
+    """th-trader/prices.json (from th-trader-alerts quote --write) -> {SYM: {price, prev_close, time}},
+    entries no older than max_age_min minutes by their own time (None = any age). A missing file is {}."""
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except ValueError as e:
+        raise MarketError("%s is not valid JSON: %s" % (path, e))
+    out = {}
+    for sym, p in ((doc or {}).get("prices") or {}).items():
+        try:
+            at = parse_iso_bkk(p["time"])
+            price = Decimal(str(p["price"]))
+            prev = Decimal(str(p["prev_close"])) if p.get("prev_close") not in (None, "") else None
+        except (KeyError, TypeError, ValueError, ArithmeticError):
+            continue
+        if max_age_min is not None and (now - at).total_seconds() > max_age_min * 60:
+            continue
+        out[sym.upper()] = {"price": price, "prev_close": prev, "time": at}
+    return out
+
+
+def prices_age_minutes(path, symbol, now):
+    """Minutes since symbol's entry in prices.json, or None when there is none."""
+    got = read_prices(path, now, max_age_min=None).get(symbol.upper())
+    return None if got is None else int((now - got["time"]).total_seconds() // 60)
+
+
 def require_fetched(n_fetched, n_requested, failed):
     """Fetching nothing is a failed run, never an empty result."""
     if n_requested and not n_fetched:

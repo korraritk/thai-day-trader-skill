@@ -277,6 +277,11 @@ def cmd_check(a):
         orders = json.load(fh).get("orders", [])
     trades = load_trades(a.trades).get(now.date().isoformat(), [])
     prev = {k.upper(): D(v) for k, v in (dict(x.split("=", 1) for x in a.prev_close.split(",")) if a.prev_close else {}).items()}
+    if not prev and a.prices:  # any age is fine for a previous close
+        prev = {s: p["prev_close"] for s, p in tm.read_prices(a.prices, now, max_age_min=None).items()
+                if p["prev_close"] is not None}
+        if prev and not a.json:
+            print("Previous closes from %s." % a.prices)
     results = check(orders, cfg, trades, now, prev or None)
     if not a.no_write:
         save_json(a.out, {"checked_at": now.strftime("%Y-%m-%dT%H:%M:%S+07:00"), "results": results})
@@ -325,6 +330,8 @@ def main(argv=None):
     p.add_argument("--orders", default="th-trader/orders.json")
     p.add_argument("--out", default="th-trader/state/risk.json")
     p.add_argument("--prev-close", help="SYMBOL=price,... for the floor/ceiling check")
+    p.add_argument("--prices", default="th-trader/prices.json",
+                   help="previous closes from th-trader-alerts (quote --write) when --prev-close is not given")
     p.add_argument("--no-write", action="store_true")
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("log", help="record a trade you made")

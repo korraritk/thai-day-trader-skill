@@ -11,6 +11,7 @@ rule and the report. The Alpaca bracket shape and the weights mode are not porte
     python size.py                       # th-trader/plan.json + th-trader/config.json
     python size.py --write               # also write th-trader/orders.json
     python size.py --price 42.50         # the price ran up since the plan: size at 42.50
+    python size.py --prices PATH         # a fresh price from th-trader-alerts (default th-trader/prices.json)
     python size.py --lot 50              # a stock at or above THB 500 for 6 months trades in lots of 50
 
 Shares = the largest multiple of the board lot that fits all of
@@ -53,7 +54,7 @@ def lots(shares, lot):
     return int((Decimal(shares) / lot).to_integral_value(rounding=ROUND_FLOOR)) * lot
 
 
-def size_trade(plan, cfg, price=None, lot=None):
+def size_trade(plan, cfg, price=None, lot=None, price_from="your price"):
     """One plan + the rules -> the sizing. Raises SizeError for zero lots or a low net R."""
     sym = str(plan.get("symbol") or "").upper()
     if not sym:
@@ -62,7 +63,7 @@ def size_trade(plan, cfg, price=None, lot=None):
     entry = entry_plan
     entry_from = "the plan's entry"
     if price is not None and D(price) > entry_plan:
-        entry, entry_from = D(price), "your price, above the plan's entry"
+        entry, entry_from = D(price), "%s, above the plan's entry" % price_from
     if stop >= entry:
         raise SizeError("the stop %s is at or above the price %s: no long trade to size" % (baht(stop), baht(entry)))
     lot = tm.board_lot(lot)
@@ -144,6 +145,9 @@ def main(argv=None):
     ap.add_argument("--plan", default="th-trader/plan.json")
     ap.add_argument("--config", default="th-trader/config.json")
     ap.add_argument("--price", help="the latest price, when it ran above the plan's entry")
+    ap.add_argument("--prices", default="th-trader/prices.json",
+                    help="latest prices from th-trader-alerts (quote --write); used when under 15 minutes old")
+    ap.add_argument("--now", help='pretend it is this Bangkok time, e.g. "2026-11-02 11:00"')
     ap.add_argument("--lot", type=int, help="board lot: 100 (default) or 50")
     ap.add_argument("--write", nargs="?", const="th-trader/orders.json", metavar="PATH")
     ap.add_argument("--json", action="store_true")
@@ -154,7 +158,18 @@ def main(argv=None):
         with open(a.plan, encoding="utf-8") as fh:
             plan = json.load(fh)
         cfg = tm.load_config(a.config)
-        s = size_trade(plan, cfg, price=D(a.price, "--price") if a.price else None, lot=a.lot)
+        price, price_from, notes = (D(a.price, "--price") if a.price else None), "your price", []
+        if price is None and a.prices:
+            now = tm.parse_now(a.now)
+            sym = str(plan.get("symbol") or "").upper()
+            fresh = tm.read_prices(a.prices, now).get(sym)
+            if fresh:
+                price, price_from = fresh["price"], "the latest price from prices.json (%s)" % fresh["time"].strftime("%H:%M")
+            else:
+                age = tm.prices_age_minutes(a.prices, sym, now)
+                if age is not None:
+                    notes.append("%s is %d minutes old: not used" % (os.path.basename(a.prices), age))
+        s = size_trade(plan, cfg, price=price, lot=a.lot, price_from=price_from)
     except (SizeError, tm.MarketError, ValueError) as e:
         print("size.py: %s" % e, file=sys.stderr)
         return 1
@@ -169,7 +184,7 @@ def main(argv=None):
     if a.json:
         print(json.dumps(t, indent=2, ensure_ascii=False))
         return 0
-    for line in report(s, plan, cfg):
+    for line in notes + report(s, plan, cfg):
         print(line)
     if a.write:
         print("Wrote %s." % a.write)
