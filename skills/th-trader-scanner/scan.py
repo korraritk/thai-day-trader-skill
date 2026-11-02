@@ -232,6 +232,174 @@ def scan_daily(data, symbols, now, min_price, min_value, min_volume, confirm=Non
     return hits, counts, last_date
 
 
+# ---------------------------------------------------------------- opening-range breakout
+
+BAR_MIN = 5
+MAX_CONFIRM = 200  # stage-2 v8 charts per orb scan, most traded first
+STALE_AFTER = 30  # minutes behind the clock before a warning
+
+
+def clock_label(t):
+    return t.strftime("%H:%M")
+
+
+def day_label(d):
+    return "%s %s" % (d.strftime("%a"), d.isoformat())
+
+
+def usable(bars, day, cutoff, n_range):
+    """Every session slot that is complete at the cutoff is there, and at least the range.
+    The lunch break has no slots, so it is never a gap."""
+    step = datetime.timedelta(minutes=BAR_MIN)
+    want = [s for s in tm.slots(day, BAR_MIN) if s + step <= cutoff]
+    if len(want) < n_range or len(bars) != len(want):
+        return False
+    return all(b["start"] == s for b, s in zip(bars, want))
+
+
+def orb_candidate(bars, n_range):
+    """Stage 1, closes only: some completed bar after the range closed at or above
+    the highest close of the range. Necessary for a breakout (range high >= any range close)."""
+    top = max(b["c"] for b in bars[:n_range])
+    return any(b["c"] >= top for b in bars[n_range:])
+
+
+def orb_hit(bars, n_range):
+    """Stage 2, real highs and lows: the first completed bar to CLOSE above the range high."""
+    rng = bars[:n_range]
+    if any(b["h"] is None or b["l"] is None for b in rng):
+        return None
+    oh = max(b["h"] for b in rng)
+    ol = min(b["l"] for b in rng)
+    for k in range(n_range, len(bars)):
+        b = bars[k]
+        if b["c"] > oh:
+            closes_at = b["start"] + datetime.timedelta(minutes=BAR_MIN)
+            return {"price": round(b["c"], 2), "at": clock_label(closes_at),
+                    "bar_start": b["start"].strftime("%H:%M"), "bar_index": k,
+                    "or_high": round(oh, 2), "or_low": round(ol, 2),
+                    "pct_over": round((b["c"] / oh - 1) * 100, 2), "_t": closes_at}
+    return None
+
+
+def orb_window(now, at, or_minutes, until, explicit_day=None):
+    """-> (day, cutoff), both Bangkok time, or raise ScanError with the plain message.
+    A cutoff in the lunch break becomes 12:30; one after the close becomes 16:30."""
+    day = explicit_day or now.date()
+    if or_minutes < BAR_MIN or or_minutes % BAR_MIN or or_minutes > 120:
+        raise ScanError("--or-minutes wants a multiple of 5 from 5 to 120 (15 is the default)")
+    sess = tm.sessions(day)
+    if not sess:
+        why = tm.holiday_name(day) or day.strftime("%A")
+        raise ScanError("No session on %s (%s): the market is closed. Run orb on a trading day, "
+                        "or replay a past day with --offline." % (day_label(day), why))
+    (m_open, m_close), (a_open, a_close) = sess
+    range_end = datetime.datetime.combine(day, m_open) + datetime.timedelta(minutes=or_minutes)
+    first_close = range_end + datetime.timedelta(minutes=BAR_MIN)
+    if at is not None:
+        cutoff = datetime.datetime.combine(day, at)
+        if explicit_day is None and cutoff > now + datetime.timedelta(seconds=59):
+            raise ScanError("--at %s is later than now (%s Bangkok)." % (at.strftime("%H:%M"), clock_label(now)))
+    else:
+        cutoff = now.replace(second=0, microsecond=0)
+    lunch_start = datetime.datetime.combine(day, m_close)
+    lunch_end = datetime.datetime.combine(day, a_open)
+    close_dt = datetime.datetime.combine(day, a_close)
+    if lunch_start < cutoff < lunch_end:
+        cutoff = lunch_start
+    if cutoff > close_dt:
+        cutoff = close_dt
+    if cutoff < first_close:
+        raise ScanError("It is %s Bangkok: the %d-minute opening range is not complete until %s, and the first "
+                        "bar after it closes at %s. Run orb again after %s."
+                        % (clock_label(cutoff), or_minutes, clock_label(range_end), clock_label(first_close),
+                           clock_label(first_close)))
+    if until is not None and cutoff.time() > until:
+        raise ScanError("It is %s Bangkok, after %s, your last time for new entries (no_entries_after): an "
+                        "opening-range breakout found now is expired. Run orb tomorrow after %s, or replay "
+                        "today with --at %s." % (clock_label(cutoff), until.strftime("%H:%M"),
+                                                 clock_label(first_close), clock_label(first_close)))
+    return day, cutoff
+
+
+def latest_bar_end(data, symbols, day, cutoff):
+    """The end of the latest complete bar any symbol has at the cutoff, or None."""
+    step = datetime.timedelta(minutes=BAR_MIN)
+    ends = []
+    for sym in symbols:
+        s = data.get(sym)
+        if s:
+            bars = tm.intraday_bars(s, day, cutoff, BAR_MIN)
+            if bars:
+                ends.append(bars[-1]["start"] + step)
+    return max(ends) if ends else None
+
+
+def stale_minutes(latest_end, now):
+    if latest_end is None:
+        return None
+    return int((now - latest_end).total_seconds() // 60)
+
+
+def in_session(now):
+    return any(datetime.datetime.combine(now.date(), o) <= now < datetime.datetime.combine(now.date(), c)
+               for o, c in tm.sessions(now.date()))
+
+
+def scan_orb(stage1, symbols, day, cutoff, or_minutes, min_price=0.0, min_volume=0, confirm=None,
+             max_confirm=None):
+    """stage1 = {SYM: series} with closes (spark or v8). confirm(sym) -> series with highs/lows
+    (None = use the stage-1 series). With confirm and max_confirm, only the max_confirm most
+    traded candidates (price x volume so far) are confirmed; the rest are counted as unconfirmed.
+    Returns (hits, counts, failed {sym: why})."""
+    n_range = or_minutes // BAR_MIN
+    counts = {"requested": len(symbols), "fetched": 0, "unusable": 0, "illiquid": 0, "scanned": 0,
+              "candidates": 0, "confirmed": 0, "unconfirmed": 0}
+    hits, failed, cands = [], {}, []
+    for sym in symbols:
+        s = stage1.get(sym)
+        if not s:
+            continue
+        counts["fetched"] += 1
+        bars = tm.intraday_bars(s, day, cutoff, BAR_MIN)
+        if not usable(bars, day, cutoff, n_range):
+            counts["unusable"] += 1
+            continue
+        vol = sum(b["v"] for b in bars) if s.get("v") else (s.get("meta") or {}).get("regularMarketVolume") or 0
+        if bars[-1]["c"] < min_price or vol < min_volume:
+            counts["illiquid"] += 1
+            continue
+        counts["scanned"] += 1
+        if orb_candidate(bars, n_range):
+            cands.append((sym, bars, bars[-1]["c"] * vol))
+    counts["candidates"] = len(cands)
+    if confirm is not None and max_confirm and len(cands) > max_confirm:
+        cands.sort(key=lambda x: -x[2])
+        counts["unconfirmed"] = len(cands) - max_confirm
+        cands = cands[:max_confirm]
+    for sym, bars, _ in cands:
+        full = bars
+        if confirm is not None:
+            try:
+                s2 = confirm(sym)
+            except tm.FetchError as e:
+                failed[sym] = str(e)
+                continue
+            full = tm.intraday_bars(s2, day, cutoff, BAR_MIN)
+            if not usable(full, day, cutoff, n_range):
+                failed[sym] = "the v8 chart has a missing bar"
+                continue
+        counts["confirmed"] += 1
+        h = orb_hit(full, n_range)
+        if h:
+            hits.append(dict({"symbol": sym, "setups": ["orb"]}, **h))
+    hits.sort(key=lambda x: (x["_t"], x["symbol"]))
+    for h in hits:
+        del h["_t"]
+    counts["hits"] = len(hits)
+    return hits, counts, failed
+
+
 # ---------------------------------------------------------------- symbols, files
 
 def symbols_from_file(path):
@@ -419,6 +587,110 @@ def cmd_daily(a):
     return 0 if hits else 1
 
 
+def parse_hhmm(text, flag="--at"):
+    try:
+        return datetime.datetime.strptime(text.strip(), "%H:%M").time()
+    except ValueError:
+        raise ScanError("%s wants HH:MM (24-hour Bangkok time), not %r" % (flag, text))
+
+
+def cmd_orb(a):
+    t0 = time.time()
+    now = tm.parse_now(a.now)
+    at = parse_hhmm(a.at) if a.at else None
+    cfg = read_config(a.config)
+    until = parse_hhmm(a.until or cfg.get("no_entries_after") or "15:30", "--until")
+    explicit_day = None
+    offline_syms = None
+    data = failed = None
+    if a.offline:
+        data, failed = load_offline(a.offline)
+        offline_syms = sorted(set(data) | set(failed))
+        if not a.now:
+            days = [tm.ts_to_bkk(s["t"][-1]).date() for s in data.values() if s["t"]]
+            if days:
+                explicit_day = max(days)
+                if at is None:
+                    raise ScanError('offline replay: give --at HH:MM or --now "YYYY-MM-DD HH:MM"')
+    day, cutoff = orb_window(now, at, a.or_minutes, until, explicit_day)
+    symbols = read_symbols(a, offline_syms)
+    confirm = None
+    if not a.offline:
+        today = tm.now_bkk().date()
+        if (today - day).days > 6:
+            raise ScanError("Yahoo's free 5-minute history used here is short: replay %s with --offline"
+                            % day.isoformat())
+        rng = "1d" if day == today else "5d"
+        progress(a, "Stage 1: 5-minute closes for %s symbols (%d spark requests)..."
+                 % (_c(len(symbols)), (len(symbols) + tm.SPARK_MAX - 1) // tm.SPARK_MAX))
+        data, failed = tm.fetch_bars(symbols, rng, "%dm" % BAR_MIN, a.pause)
+
+        def confirm(sym):
+            if a.pause:
+                tm.SLEEP(a.pause)
+            return tm.fetch_chart(sym, rng, "%dm" % BAR_MIN)
+    tm.require_fetched(sum(1 for s in symbols if s in data), len(symbols), failed or {})
+    # Yahoo's .BK bars run 15-30 minutes behind: cut at the latest bar it actually has, so a
+    # delayed feed is not read as every chart missing its last bars.
+    latest = latest_bar_end(data, symbols, day, cutoff)
+    if latest is not None and latest < cutoff:
+        cutoff = latest
+    stale = stale_minutes(latest, now) if day == now.date() else None
+    hits, counts, failed2 = scan_orb(data, symbols, day, cutoff, a.or_minutes, a.min_price, a.min_volume,
+                                     confirm, a.max_confirm)
+    failed = dict(failed or {})
+    failed.update(failed2)
+    nfailed = len([s for s in symbols if s in failed])
+    as_of = "%s %s Bangkok" % (day.isoformat(), clock_label(cutoff))
+    range_end = datetime.datetime.combine(day, tm.SESSIONS[0][0]) + datetime.timedelta(minutes=a.or_minutes)
+    doc = {"created_by": "th-trader-scanner", "created_at": now.strftime("%Y-%m-%dT%H:%M:%S+07:00"), "mode": "orb",
+           "as_of": as_of, "currency": "THB", "market": "SET", "universe": len(symbols),
+           "scanned": counts["scanned"], "failed": nfailed, "unconfirmed": counts["unconfirmed"], "source": "yahoo",
+           "or_minutes": a.or_minutes, "interval": "%dm" % BAR_MIN, "tick_table": tm.tick_table_label(day),
+           "filters": {"min_price": a.min_price, "min_volume": a.min_volume}, "note": NOTE, "hits": hits}
+    warn = stale is not None and stale > STALE_AFTER and in_session(now)
+    if warn:
+        doc["stale_minutes"] = stale
+    if a.offline:
+        doc["offline"] = os.path.basename(a.offline.rstrip("/\\"))
+    if not a.no_write:
+        write_json(a.out, doc)
+    if a.json:
+        print(json.dumps(dict(doc, counts=counts, seconds=round(time.time() - t0, 1)), indent=2, ensure_ascii=False))
+        return 0 if hits else 1
+    print("Opening-range breakout scan, %s, data to %s Bangkok: %d-minute range (10:00 to %s), 5-minute bars, "
+          "Yahoo." % (day_label(day), clock_label(cutoff), a.or_minutes, clock_label(range_end)))
+    if warn:
+        print("Warning: Yahoo's latest bar ended %s, %d minutes ago; a breakout may already be stale."
+              % (clock_label(latest), stale))
+    print("Fetched %s of %s charts%s; %s usable%s; %s candidates, %s confirmed with real highs and lows."
+          % (_c(counts["fetched"]), _c(len(symbols)),
+             (" (%s failed or had no data)" % _c(nfailed)) if nfailed else "",
+             _c(counts["scanned"]),
+             (" (%s under the price / volume floor)" % _c(counts["illiquid"])) if counts["illiquid"] else "",
+             _c(counts["candidates"]), _c(counts["confirmed"])))
+    if counts["unusable"]:
+        print("%s charts had a missing 5-minute bar and were skipped." % _c(counts["unusable"]))
+    if counts["unconfirmed"]:
+        print("PARTIAL: %s more candidates were not checked (only the %s most traded are; --max-confirm 0 "
+              "checks all)." % (_c(counts["unconfirmed"]), _c(a.max_confirm)))
+    if hits:
+        print("%d of %s charts closed above their opening-range high by %s:"
+              % (len(hits), ("the %s checked" % _c(counts["confirmed"])) if counts["unconfirmed"]
+                 else _c(counts["scanned"]), clock_label(cutoff)))
+        for h in hits[:a.show]:
+            print("  %6s  %-8s %10s  range %s to %s  %+.2f%% over" % (
+                h["at"], h["symbol"], money(h["price"]), money(h["or_low"]), money(h["or_high"]), h["pct_over"]))
+        if len(hits) > a.show:
+            print("  ... and %d more in the watchlist (--show N for more)." % (len(hits) - a.show))
+    else:
+        print("No chart closed above its opening-range high by %s." % clock_label(cutoff))
+    if not a.no_write:
+        print("Wrote %s (mode orb, %d hit%s)." % (a.out, len(hits), "" if len(hits) == 1 else "s"))
+    print(NOTE)
+    return 0 if hits else 1
+
+
 # ---------------------------------------------------------------- CLI
 
 def build_parser():
@@ -453,10 +725,18 @@ def build_parser():
     common(p, 1.0)
     p.add_argument("--min-value", type=float, default=50_000_000,
                    help="20-day average traded value, THB (50,000,000; 0 = off)")
+    p = sub.add_parser("orb", help="opening-range breakouts of the morning session so far")
+    common(p, 1.0)
+    p.add_argument("--or-minutes", type=int, default=15)
+    p.add_argument("--max-confirm", type=int, default=MAX_CONFIRM,
+                   help="v8 charts to fetch in stage 2, most traded first (%d; 0 = all)" % MAX_CONFIRM)
+    p.add_argument("--at", help="cut the clock at this Bangkok time, HH:MM")
+    p.add_argument("--until", help="no new entries after HH:MM (default: config no_entries_after, 15:30)")
+    p.add_argument("--config", default="th-trader/config.json")
     return ap, sub, common
 
 
-COMMANDS = {"universe": cmd_universe, "daily": cmd_daily}
+COMMANDS = {"universe": cmd_universe, "daily": cmd_daily, "orb": cmd_orb}
 
 
 def main(argv=None):
