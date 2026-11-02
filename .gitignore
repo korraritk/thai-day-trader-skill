@@ -2,3 +2,19 @@ __pycache__/
 .pytest_cache/
 th-trader/
 .superpowers/
+
+# secrets: the Telegram token belongs in the environment, never in a file here
+.env
+.env.*
+*.env
+
+# local Python environments and editor/OS files
+*.py[cod]
+.venv/
+venv/
+.vscode/
+.idea/
+.claude/settings.local.json
+Thumbs.db
+.DS_Store
+*.log
