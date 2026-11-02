@@ -59,7 +59,10 @@ replaces them.
 A ring reads like "PTT 41.70 hit the stop 41.75 at 11:05 (data ~15 min
 behind)". Yahoo's .BK quotes run 15 to 30 minutes behind, so a ring says the
 stop was crossed in delayed data: the stop order in the broker's app is what
-actually gets the user out.
+actually gets the user out. In the lunch break and after the close the note
+reads "last price before the lunch break" (or "before the close"), or "data ~N
+min behind at the lunch break" when Yahoo stopped short of it; a quote from an
+earlier day reads "last price from YYYY-MM-DD HH:MM".
 
 ## Steps
 

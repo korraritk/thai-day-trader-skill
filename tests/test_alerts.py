@@ -147,3 +147,19 @@ def test_reset_rearms(tmp_path, monkeypatch, capsys):
     rid = json.loads((tmp_path / "th-trader" / "alerts.json").read_text(encoding="utf-8"))["rules"][0]["id"]
     assert alerts.main(["reset", rid]) == 0
     assert alerts.main(["check", "--offline", str(off), "--now", "2026-10-30 16:50", "--no-telegram"]) == 0
+
+
+@pytest.mark.parametrize("data,now,note", [
+    ((10, 50), (11, 5), "data ~15 min behind"),                            # open: minutes behind
+    ((12, 29), (13, 24), "last price before the lunch break"),
+    ((11, 50), (13, 0), "data ~40 min behind at the lunch break"),          # Yahoo stopped short of 12:30
+    ((16, 29), (17, 0), "last price before the close"),
+])
+def test_delay_note_names_the_break(data, now, note):
+    q = {"time": datetime(2026, 11, 2, *data)}
+    assert alerts.delay_note(q, datetime(2026, 11, 2, *now)) == note
+
+
+def test_delay_note_from_an_earlier_day():
+    q = {"time": datetime(2026, 10, 30, 16, 29)}
+    assert alerts.delay_note(q, datetime(2026, 11, 2, 9, 0)) == "last price from 2026-10-30 16:29"

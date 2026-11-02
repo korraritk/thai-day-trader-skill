@@ -175,9 +175,19 @@ def active(rule, today):
 
 
 def delay_note(q, now):
-    if not q.get("time"):
+    """How old the quote is. In the lunch break or after the close, minutes behind would read ~0 and
+    look live, so name the break instead; a quote from an earlier day gives its date."""
+    t = q.get("time")
+    if not t:
         return "data time unknown"
-    return "data ~%d min behind" % tm.minutes_behind(q["time"], now)
+    if t.date() != now.date():
+        return "last price from %s" % t.strftime("%Y-%m-%d %H:%M")
+    behind = tm.minutes_behind(t, now)
+    state = clock_status(now)["state"]
+    if state not in ("lunch", "after close"):
+        return "data ~%d min behind" % behind
+    where = "the lunch break" if state == "lunch" else "the close"
+    return "last price before %s" % where if behind < 5 else "data ~%d min behind at %s" % (behind, where)
 
 
 def evaluate(rules, quotes, now):
