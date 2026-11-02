@@ -160,6 +160,7 @@ def evaluate(series, day, now, setup="orb", level=None, or_minutes=15, min_volum
 
 PAUSE = 0.5
 MIN_EVERY = 30
+MAX_ERRORS = 5  # failed reads in a row before watch gives up
 
 
 def chart_range(day, today):
@@ -340,9 +341,26 @@ def cmd_watch(a, cfg):
     until = datetime.datetime.combine(day, datetime.datetime.strptime(a.until, "%H:%M").time()) if a.until else None
     print("Watching %s from %s Bangkok, one line per closed 5-minute bar (Yahoo, delayed)."
           % (sym, now.strftime("%H:%M")))
-    printed = set()
+    printed, errors = set(), 0
     while True:
-        series = load_series(sym, day, a.offline)
+        try:
+            series = load_series(sym, day, a.offline)
+            errors = 0
+        except tm.MarketError as e:
+            errors += 1
+            print("%s  could not read bars: %s" % (now.strftime("%H:%M:%S"), e))
+            if errors >= MAX_ERRORS:
+                print("Stopping after %d failed reads in a row." % errors)
+                return 1
+            series = None
+        if series is None:
+            if simulated:
+                now += STEP
+            else:
+                sys.stdout.flush()
+                time.sleep(every)
+                now = tm.now_bkk()
+            continue
         r = evaluate(series, day, now, **opts)
         for b in tm.intraday_bars(series, day, now):
             if b["start"] in printed:

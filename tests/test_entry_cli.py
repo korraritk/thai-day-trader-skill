@@ -84,3 +84,27 @@ def test_check_sends_telegram_once_per_trigger(capsys, tmp_path, monkeypatch):
     for _ in range(2):
         assert run(capsys, "check", "PTT", "--offline", CHART, "--now", "2026-10-29 11:30", "--write")[0] == 0
     assert len(sent) == 1 and "PTT" in sent[0] and "42.25" in sent[0]
+
+
+def test_watch_survives_a_failed_read(capsys, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    real, calls = entry.load_series, []
+
+    def flaky(sym, day, offline=None):
+        calls.append(1)
+        if len(calls) in (2, 3):
+            raise entry.tm.FetchError("Yahoo answered HTTP 503")
+        return real(sym, day, offline)
+    monkeypatch.setattr(entry, "load_series", flaky)
+    rc, out, _ = run(capsys, "watch", "PTT", "--offline", CHART, "--now", "2026-10-29 10:20", "--no-telegram")
+    assert rc == 0 and "could not read bars: Yahoo answered HTTP 503" in out
+
+
+def test_watch_stops_after_five_failed_reads(capsys, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    def down(sym, day, offline=None):
+        raise entry.tm.FetchError("Yahoo answered HTTP 503")
+    monkeypatch.setattr(entry, "load_series", down)
+    rc, out, _ = run(capsys, "watch", "PTT", "--offline", CHART, "--now", "2026-10-29 10:20", "--no-telegram")
+    assert rc == 1 and "Stopping after 5 failed reads in a row" in out
