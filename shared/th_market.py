@@ -7,6 +7,10 @@ Thailand has no daylight saving, so Bangkok is a fixed UTC+7 and no tz database 
 import datetime
 import json
 import os
+import time as time_module
+import urllib.error
+import urllib.parse
+import urllib.request
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -203,3 +207,204 @@ def board_lot(lot=None):
         raise MarketError("a SET board lot is 100 shares, or 50 for a stock priced at or above THB 500 "
                           "for 6 months; %s is not one" % lot)
     return lot
+
+
+# ---------------------------------------------------------------- Yahoo .BK data
+# Ported from day-trader-skill's trader-scanner (MIT, Jake Schincariol): http_get, yahoo_get,
+# series_from_result, parse_spark, parse_chart, fetch_spark. Symbols keep their dots and get
+# .BK; times are Bangkok, not New York.
+
+UA = "Mozilla/5.0 (compatible; thai-trader-skills/1.0)"
+YAHOO_HOSTS = ("https://query2.finance.yahoo.com", "https://query1.finance.yahoo.com")
+SPARK_MAX = 20  # Yahoo's spark answers 400 above 20 symbols
+PAUSE = 0.3  # seconds between requests: be polite to free endpoints
+BACKOFF = 5.0  # seconds to wait before the one retry after a 429
+SLEEP = time_module.sleep  # tests swap this out
+DAY_DONE = datetime.time(16, 40)  # after the 16:30 close, pre-close and ATC
+
+
+class FetchError(MarketError):
+    """Yahoo gave nothing usable."""
+
+
+def to_yahoo(symbol):
+    s = symbol.strip().upper()
+    return s if s.endswith(".BK") else s + ".BK"
+
+
+def yahoo_url_symbol(symbol):
+    return urllib.parse.quote(to_yahoo(symbol), safe=".-")
+
+
+def http_get(url, timeout=20):
+    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode("utf-8", "replace")
+
+
+def yahoo_get(path):
+    """GET a Yahoo Finance path. query2 first, query1 on a 429 or 5xx, and one
+    more round after BACKOFF seconds if a 429 was seen. 4xx other than 429 is final."""
+    last = "no answer"
+    for attempt in (0, 1):
+        saw_429 = False
+        for host in YAHOO_HOSTS:
+            try:
+                return http_get(host + path)
+            except urllib.error.HTTPError as e:
+                last = "HTTP %d" % e.code
+                try:
+                    body = e.read().decode("utf-8", "replace") if 400 <= e.code < 500 and e.code != 429 else ""
+                except Exception:
+                    body = ""
+                finally:
+                    e.close()
+                if e.code == 429:
+                    saw_429 = True
+                    continue
+                if e.code >= 500:
+                    continue
+                if body.strip().startswith("{"):
+                    return body  # Yahoo's JSON error ("No data found"), parsed by the caller
+                raise FetchError("Yahoo answered %s for %s" % (last, path.split("?")[0]))
+            except (urllib.error.URLError, OSError) as e:
+                last = str(getattr(e, "reason", e))
+                continue
+        if attempt == 0 and saw_429:
+            SLEEP(BACKOFF)
+            continue
+        break
+    raise FetchError("Yahoo answered %s for %s" % (last, path.split("?")[0]))
+
+
+def spark_path(symbols, rng, interval):
+    return "/v7/finance/spark?symbols=%s&range=%s&interval=%s" % (
+        ",".join(yahoo_url_symbol(s) for s in symbols), rng, interval)
+
+
+def chart_path(symbol, rng, interval):
+    return "/v8/finance/chart/%s?range=%s&interval=%s" % (yahoo_url_symbol(symbol), rng, interval)
+
+
+def series_from_result(res):
+    """A Yahoo chart result (v8 or one spark response) -> plain lists."""
+    q = ((res.get("indicators") or {}).get("quote") or [{}])[0] or {}
+    t = res.get("timestamp") or []
+    n = len(t)
+
+    def col(k):
+        v = q.get(k)
+        return list(v) + [None] * (n - len(v)) if isinstance(v, list) else None
+    return {"t": list(t), "c": col("close") or [None] * n, "o": col("open"), "h": col("high"),
+            "l": col("low"), "v": col("volume"), "meta": res.get("meta") or {}}
+
+
+def parse_spark(text_or_doc, wanted=None):
+    """Spark JSON -> {SYM: series}. Symbols Yahoo does not know are missing from the answer.
+    `wanted` maps Yahoo symbols back to ours (PTT.BK -> PTT)."""
+    doc = json.loads(text_or_doc) if isinstance(text_or_doc, str) else text_or_doc
+    sp = (doc or {}).get("spark") if isinstance(doc, dict) else None
+    if not isinstance(sp, dict):
+        raise FetchError("Yahoo's spark answer is not the shape this tool knows")
+    err = sp.get("error")
+    out = {}
+    for item in sp.get("result") or []:
+        resp = item.get("response") or []
+        if not resp:
+            continue
+        ysym = (item.get("symbol") or (resp[0].get("meta") or {}).get("symbol") or "").upper()
+        sym = (wanted or {}).get(ysym, ysym[:-3] if ysym.endswith(".BK") else ysym)
+        out[sym] = series_from_result(resp[0])
+    if err and not out:
+        raise FetchError("Yahoo spark: %s" % (err.get("description") or err.get("code") or err))
+    return out
+
+
+def parse_chart(text_or_doc, symbol=""):
+    """v8 chart JSON -> series. Raises FetchError for Yahoo's 'no data' answers."""
+    try:
+        doc = json.loads(text_or_doc) if isinstance(text_or_doc, str) else text_or_doc
+        chart = doc["chart"]
+    except (ValueError, KeyError, TypeError):
+        raise FetchError("Yahoo returned something unexpected for %s" % symbol)
+    res = chart.get("result")
+    if not res:
+        err = chart.get("error") or {}
+        raise FetchError("no data for %s: %s" % (symbol, err.get("description", "unknown symbol")))
+    return series_from_result(res[0])
+
+
+def fetch_bars(symbols, rng, interval, pause=PAUSE):
+    """Spark in batches of 20 -> ({SYM: series}, {SYM: why it failed})."""
+    data, failed = {}, {}
+    batches = [symbols[i:i + SPARK_MAX] for i in range(0, len(symbols), SPARK_MAX)]
+    for k, batch in enumerate(batches):
+        if k and pause:
+            SLEEP(pause)
+        wanted = {to_yahoo(s): s for s in batch}
+        try:
+            got = parse_spark(yahoo_get(spark_path(batch, rng, interval)), wanted)
+        except (FetchError, ValueError) as e:
+            for s in batch:
+                failed[s] = str(e)
+            continue
+        for s in batch:
+            if s in got:
+                data[s] = got[s]
+            else:
+                failed[s] = "no data from Yahoo"
+    return data, failed
+
+
+def fetch_chart(symbol, rng, interval):
+    return parse_chart(yahoo_get(chart_path(symbol, rng, interval)), symbol)
+
+
+def require_fetched(n_fetched, n_requested, failed):
+    """Fetching nothing is a failed run, never an empty result."""
+    if n_requested and not n_fetched:
+        why = next(iter(failed.values()), "no answer") if failed else "no answer"
+        raise FetchError("Fetched 0 of %d symbols from Yahoo: %s" % (n_requested, why))
+
+
+def _num(col, i):
+    if not col or col[i] is None:
+        return None
+    return float(col[i])
+
+
+def daily_bars(series, now):
+    """Complete daily bars, oldest first, dated by their Bangkok date. Today's bar counts
+    only after 16:40; null closes and bars dated after the clock are dropped."""
+    today = now.date()
+    today_done = now.time() >= DAY_DONE or not is_trading_day(today)
+    out = {}
+    for i, ts in enumerate(series["t"]):
+        c = series["c"][i]
+        if c is None:
+            continue
+        d = ts_to_bkk(ts).date()
+        if d > today or (d == today and not today_done):
+            continue
+        out[d] = {"date": d, "o": _num(series.get("o"), i), "h": _num(series.get("h"), i),
+                  "l": _num(series.get("l"), i), "c": float(c),
+                  "v": _num(series.get("v"), i)}  # one bar a day: a late duplicate (the live tick) wins
+    return [out[d] for d in sorted(out)]
+
+
+def intraday_bars(series, day, cutoff, interval=5):
+    """Bars of `day` on the session grid that are complete at `cutoff`, one per slot.
+    Lunch-break nulls and off-grid live ticks are dropped."""
+    grid = set(slots(day, interval))
+    step = datetime.timedelta(minutes=interval)
+    out = {}
+    for i, ts in enumerate(series["t"]):
+        c = series["c"][i]
+        if c is None:
+            continue
+        start = ts_to_bkk(ts)
+        if start not in grid or start + step > cutoff:
+            continue
+        out[start] = {"start": start, "o": _num(series.get("o"), i), "h": _num(series.get("h"), i),
+                      "l": _num(series.get("l"), i), "c": float(c), "v": _num(series.get("v"), i) or 0}
+    return [out[k] for k in sorted(out)]

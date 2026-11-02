@@ -1,0 +1,20 @@
+"""Save raw Yahoo JSON for the tests. Run once by hand; the tests never touch the network."""
+import os
+import urllib.request
+
+HERE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "yahoo")
+UA = "Mozilla/5.0"
+BASE = "https://query1.finance.yahoo.com"
+FILES = {
+    "chart_PTT_5m_5d.json": "/v8/finance/chart/PTT.BK?range=5d&interval=5m",
+    "spark_PTT_CPALL_1d_3mo.json": "/v7/finance/spark?symbols=PTT.BK,CPALL.BK&range=3mo&interval=1d",
+    "spark_PTT_CPALL_5m_1d.json": "/v7/finance/spark?symbols=PTT.BK,CPALL.BK&range=1d&interval=5m",
+}
+
+for name, path in FILES.items():
+    req = urllib.request.Request(BASE + path, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        body = r.read()
+    with open(os.path.join(HERE, name), "wb") as fh:
+        fh.write(body)
+    print(name, len(body))
