@@ -12,6 +12,8 @@ import zipfile
 import xml.etree.ElementTree as ET
 
 HEADER_KEYS = ("symbol", "company", "market")
+# The Thai-language download (listedCompanies_th_TH.xls) names the same columns in Thai.
+THAI_HEADERS = {"หลักทรัพย์": "symbol", "บริษัท": "company", "ตลาด": "market"}
 BIFF_MAGIC = bytes.fromhex("D0CF11E0")
 ROW_RE = re.compile(r"<tr[^>]*>(.*?)</tr>", re.I | re.S)
 CELL_RE = re.compile(r"<t[dh][^>]*>(.*?)</t[dh]>", re.I | re.S)
@@ -41,7 +43,7 @@ def read_listed_companies(path):
     if data.startswith(b"PK"):
         rows = _xlsx_rows(data)
     elif b"<tr" in data[:4096].lower():
-        rows = _html_rows(data.decode("utf-8", "replace"))
+        rows = _html_rows(_decode_html(data))
     else:
         rows = _csv_rows(data)
     return _companies(rows)
@@ -71,6 +73,7 @@ def _header(row):
     columns = {}
     for i, cell in enumerate(row):
         h = cell.strip().lower()
+        h = THAI_HEADERS.get(h, h)
         for key in HEADER_KEYS:
             if h.startswith(key) and key not in columns:
                 columns[key] = i
@@ -80,6 +83,14 @@ def _header(row):
 def _cell(row, columns, key):
     i = columns.get(key)
     return row[i] if i is not None and i < len(row) else ""
+
+
+def _decode_html(data):
+    """UTF-8 when it is valid, else cp874: SET's Thai-language download is cp874."""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("cp874", "replace")
 
 
 def _html_rows(text):

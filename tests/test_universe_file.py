@@ -12,7 +12,7 @@ def path(name):
     return os.path.join(FIXTURES, "universe", name)
 
 
-@pytest.mark.parametrize("name", ["listed.html.xls", "listed.xlsx", "listed_cp874.csv", "listed_utf8bom.csv"])
+@pytest.mark.parametrize("name", ["listed.html.xls", "listed_th_TH.html.xls", "listed.xlsx", "listed_cp874.csv", "listed_utf8bom.csv"])
 def test_reads_each_format(name):
     assert read_listed_companies(path(name)) == EXPECTED
 

@@ -25,6 +25,17 @@ def html():
         fh.write("<html><body><table>%s</table></body></html>" % body)
 
 
+def html_th():
+    """The Thai-language download (listedCompanies_th_TH.xls): Thai headers, cp874 bytes."""
+    head = ("หลักทรัพย์", "บริษัท", "ตลาด")
+    cells = lambda r, tag: "".join("<%s>%s</%s>" % (tag, esc(c), tag) for c in r)
+    body = "<tr><td colspan=\"3\"><b>รายชื่อบริษัทจดทะเบียน</b></td></tr>"
+    body += "<tr>%s</tr>" % cells(head, "td")
+    body += "".join("<tr>%s</tr>" % cells(r, "td") for r in ROWS[1:])
+    with open(os.path.join(HERE, "listed_th_TH.html.xls"), "w", encoding="cp874") as fh:
+        fh.write("<html><body><table>%s</table></body></html>" % body)
+
+
 def xlsx():
     strings = sorted({c for r in ROWS for c in r})
     idx = {s: i for i, s in enumerate(strings)}
@@ -52,6 +63,7 @@ def biff():
 
 
 html()
+html_th()
 xlsx()
 csv("listed_cp874.csv", "cp874")
 csv("listed_utf8bom.csv", "utf-8-sig")
