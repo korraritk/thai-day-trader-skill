@@ -112,3 +112,22 @@ def test_stale_data_warns_and_cuts_at_the_latest_bar(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Warning: Yahoo's latest bar ended 10:35, 40 minutes ago" in out
     assert "10:35 Bangkok" in out
+
+
+def test_no_bars_for_the_day_yet_is_not_read_as_fresh(tmp_path, capsys):
+    # Yahoo at 10:30 on 2026-11-16 had no bar of the day yet: the scan read 0 symbols and wrote
+    # as_of 10:30, which the site showed as "data to 10:30, 0 minutes late, no breakout".
+    with open(CHART, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    res = doc["chart"]["result"][0]
+    keep = [i for i, t in enumerate(res["timestamp"]) if tm.ts_to_bkk(t).date() < DAY]
+    res["timestamp"] = [res["timestamp"][i] for i in keep]
+    q = res["indicators"]["quote"][0]
+    for k in list(q):
+        q[k] = [q[k][i] for i in keep]
+    f = tmp_path / "PTT.json"
+    f.write_text(json.dumps(doc), encoding="utf-8")
+    rc = scan.main(["orb", "--offline", str(f), "--now", "2026-10-30 10:30", "--no-write", "--json"])
+    out = capsys.readouterr()
+    assert "Traceback" not in out.err
+    assert rc != 0 and "no 5-minute bar of 2026-10-30 yet" in out.err and "Traceback" not in out.out

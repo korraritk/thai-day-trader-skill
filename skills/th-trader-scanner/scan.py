@@ -627,7 +627,12 @@ def cmd_orb(a):
     # Yahoo's .BK bars run 15-30 minutes behind: cut at the latest bar it actually has, so a
     # delayed feed is not read as every chart missing its last bars.
     latest = latest_bar_end(data, symbols, day, cutoff)
-    if latest is not None and latest < cutoff:
+    if latest is None:
+        # Not one chart has a bar of the day: an empty scan stamped with the cutoff would read as
+        # fresh data with no breakout.
+        raise ScanError("Yahoo has no 5-minute bar of %s yet (its .BK bars run 15-30 minutes behind): "
+                        "run orb again later." % day.isoformat())
+    if latest < cutoff:
         cutoff = latest
     stale = stale_minutes(latest, now) if day == now.date() else None
     hits, counts, failed2 = scan_orb(data, symbols, day, cutoff, a.or_minutes, a.min_price, a.min_volume,
