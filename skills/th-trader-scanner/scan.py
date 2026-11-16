@@ -261,6 +261,48 @@ def orb_hit(bars, n_range):
     return None
 
 
+RVOL_DAYS = 4  # earlier sessions a breakout's volume is compared with
+SET_INDEX = "^SET.BK"
+
+
+def relative_volume(series, day, bar_start, days=RVOL_DAYS):
+    """Volume from the open to the end of the bar starting at bar_start, over the average of the
+    same window on up to `days` earlier sessions in the series. None with fewer than two."""
+    def window_volume(d):
+        end = datetime.datetime.combine(d, bar_start.time()) + datetime.timedelta(minutes=BAR_MIN)
+        return sum(b["v"] for b in tm.intraday_bars(series, d, end, BAR_MIN))
+    earlier = sorted({tm.ts_to_bkk(ts).date() for ts in series["t"]} - {day}, reverse=True)
+    earlier = [d for d in earlier if d < day][:days]
+    volumes = [v for v in (window_volume(d) for d in earlier) if v > 0]
+    if len(volumes) < 2:
+        return None
+    return round(window_volume(day) / (sum(volumes) / len(volumes)), 2)
+
+
+def vwap_pct(bars, price):
+    """The break price over the day's volume-weighted average price to the break, in %."""
+    if any(b["h"] is None or b["l"] is None for b in bars):
+        return None
+    volume = sum(b["v"] for b in bars)
+    if not volume:
+        return None
+    vwap = sum((b["h"] + b["l"] + b["c"]) / 3 * b["v"] for b in bars) / volume
+    return round((price / vwap - 1) * 100, 2)
+
+
+def index_change_pct(series, day, bar_start):
+    """The index at the close of the bar starting at bar_start, over its previous session's
+    close, in %. None without the index or an earlier close in the series."""
+    if not series:
+        return None
+    end = bar_start + datetime.timedelta(minutes=BAR_MIN)
+    today = [b for b in tm.intraday_bars(series, day, end, BAR_MIN) if b["start"] <= bar_start]
+    before = [(ts, c) for ts, c in zip(series["t"], series["c"]) if c is not None and tm.ts_to_bkk(ts).date() < day]
+    if not today or not before:
+        return None
+    return round((today[-1]["c"] / before[-1][1] - 1) * 100, 2)
+
+
 def orb_window(now, at, or_minutes, until, explicit_day=None):
     """-> (day, cutoff), both Bangkok time, or raise ScanError with the plain message.
     A cutoff in the lunch break becomes 12:30; one after the close becomes 16:30."""
@@ -386,6 +428,10 @@ def scan_orb(stage1, symbols, day, cutoff, or_minutes, min_price=0.0, min_volume
         counts["confirmed"] += 1
         h = orb_hit(full, n_range)
         if h:
+            src = s2 if confirm is not None else stage1[sym]
+            upto = full[:h["bar_index"] + 1]
+            h["rvol"] = relative_volume(src, day, upto[-1]["start"]) if src.get("v") else None
+            h["vwap_pct"] = vwap_pct(upto, h["price"]) if src.get("v") else None
             hits.append(dict({"symbol": sym, "setups": ["orb"]}, **h))
     hits.sort(key=lambda x: (x["_t"], x["symbol"]))
     for h in hits:
@@ -622,7 +668,8 @@ def cmd_orb(a):
         def confirm(sym):
             if a.pause:
                 tm.SLEEP(a.pause)
-            return tm.fetch_chart(sym, rng, "%dm" % BAR_MIN)
+            # five days, not one: relative volume compares with the same window on earlier sessions
+            return tm.fetch_chart(sym, "5d", "%dm" % BAR_MIN)
     tm.require_fetched(sum(1 for s in symbols if s in data), len(symbols), failed or {})
     # Yahoo's .BK bars run 15-30 minutes behind: cut at the latest bar it actually has, so a
     # delayed feed is not read as every chart missing its last bars.
@@ -637,6 +684,15 @@ def cmd_orb(a):
     stale = stale_minutes(latest, now) if day == now.date() else None
     hits, counts, failed2 = scan_orb(data, symbols, day, cutoff, a.or_minutes, a.min_price, a.min_volume,
                                      confirm, a.max_confirm)
+    index_series = None
+    if hits and not a.offline:
+        try:
+            index_series = tm.fetch_chart(SET_INDEX, "5d", "%dm" % BAR_MIN)
+        except tm.FetchError:
+            pass  # the SET column is left empty; the scan itself stands
+    for h in hits:
+        h["set_pct"] = index_change_pct(index_series, day,
+                                        datetime.datetime.combine(day, parse_hhmm(h["bar_start"])))
     failed = dict(failed or {})
     failed.update(failed2)
     nfailed = len([s for s in symbols if s in failed])
