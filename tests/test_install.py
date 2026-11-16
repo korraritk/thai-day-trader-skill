@@ -42,10 +42,10 @@ def test_every_skill_is_standalone(tmp_path):
                   ".installed-from-thaitraderskills"):
             assert (tmp_path / name / f).exists(), (name, f)
     run = subprocess.run([sys.executable, str(tmp_path / "th-trader-exit" / "exit.py"), "plan", "--symbol", "X",
-                          "--entry", "42.25", "--or-high", "42.25", "--or-low", "41.5", "--no-fetch", "--json"],
+                          "--entry", "42.20", "--or-high", "42.20", "--or-low", "41.5", "--no-fetch", "--json"],
                          capture_output=True, text=True, cwd=str(tmp_path))
     assert run.returncode == 0, run.stderr
-    assert json.loads(run.stdout)["stop"] == "41.75"
+    assert json.loads(run.stdout)["stop"] == "41.80"
 
 
 def test_reinstall_replaces_its_own_copy(tmp_path):

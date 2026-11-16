@@ -27,24 +27,27 @@ def test_price_limits_round_inward():
     assert tm.price_limits(D("42.00"), OLD) == (D("29.50"), D("54.50"))  # 29.4 -> up 29.50; 54.6 -> down 54.50
 
 
-def test_missing_new_table_falls_back_and_says_so():
+@pytest.mark.parametrize("price,tick", [("1.99", "0.01"), ("2.00", "0.02"), ("9.98", "0.02"), ("10.00", "0.05"),
+                                        ("24.95", "0.05"), ("25.00", "0.10"), ("49.90", "0.10"), ("50.00", "0.25"),
+                                        ("100.00", "0.50"), ("400", "2.00")])
+def test_tick_bands_from_2026_11_16(price, tick):
+    assert tm.tick(D(price), NEW) == D(tick)
+    assert not tm.tick_fallback(NEW) and tm.tick_table_label(NEW) == "2026-11-16"
+
+
+def test_missing_new_table_falls_back_and_says_so(tmp_path, monkeypatch):
+    with open(tm.data_path("tick-tables.json"), encoding="utf-8") as fh:
+        tables = json.load(fh)
+    tables[1].update(status="missing", bands=[])
+    p = tmp_path / "tick-tables.json"
+    p.write_text(json.dumps(tables), encoding="utf-8")
+    monkeypatch.setattr(tm, "_TICK_TABLES", None)
+    monkeypatch.setattr(tm, "_TICK_FILE", str(p))
     assert tm.tick(D("12.00"), NEW) == D("0.10")
     assert tm.tick_fallback(NEW) and not tm.tick_fallback(OLD)
     assert tm.tick_table_label(NEW) == "2009 (fallback)" and tm.tick_table_label(OLD) == "2009"
     assert tm.TICK_FALLBACK_NOTE == ("SET's tick table from 2026-11-16 is not in tick-tables.json yet; "
                                      "prices were rounded with the 2009 table.")
-
-
-def test_verified_new_table_is_used(tmp_path, monkeypatch):
-    with open(tm.data_path("tick-tables.json"), encoding="utf-8") as fh:
-        tables = json.load(fh)
-    tables[1].update(status="verified", bands=[{"from": "0", "tick": "0.01"}, {"from": "5", "tick": "0.01"}])
-    p = tmp_path / "tick-tables.json"
-    p.write_text(json.dumps(tables), encoding="utf-8")
-    monkeypatch.setattr(tm, "_TICK_TABLES", None)
-    monkeypatch.setattr(tm, "_TICK_FILE", str(p))
-    assert tm.tick(D("12.00"), NEW) == D("0.01") and not tm.tick_fallback(NEW)
-    assert tm.tick_table_label(NEW) == "2026-11-16"
 
 
 def test_board_lot():

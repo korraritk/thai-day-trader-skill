@@ -43,11 +43,11 @@ def test_flags_and_write(capsys, tmp_path, monkeypatch):
 
 
 def test_refusal_is_one_line(capsys):
-    rc, _, err = run(capsys, "plan", "--symbol", "X", "--entry", "42.25", "--stop", "price:42.50", "--no-fetch")
+    rc, _, err = run(capsys, "plan", "--symbol", "X", "--entry", "42.20", "--stop", "price:42.50", "--no-fetch")
     assert rc == 1 and err.startswith("exit.py: ") and "Traceback" not in err
 
 
 def test_no_fetch_says_limits_were_not_checked(capsys):
-    _, out, _ = run(capsys, "plan", "--symbol", "X", "--entry", "42.25", "--or-high", "42.25", "--or-low", "41.5",
+    _, out, _ = run(capsys, "plan", "--symbol", "X", "--entry", "42.20", "--or-high", "42.20", "--or-low", "41.5",
                     "--no-fetch")
     assert "not checked" in out
