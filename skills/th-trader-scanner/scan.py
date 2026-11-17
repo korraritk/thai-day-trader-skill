@@ -30,6 +30,7 @@ import gzip
 import json
 import os
 import re
+import statistics
 import sys
 import time
 from decimal import Decimal
@@ -265,12 +266,15 @@ def orb_hit(bars, n_range):
     return None
 
 
-RVOL_DAYS = 4  # earlier sessions a breakout's volume is compared with
+# earlier sessions a breakout's volume is compared with: the median of ten, because the first
+# minutes after the open swing 30-fold between quiet and busy days (2026-11-16, RATCH at 10:15)
+RVOL_DAYS = 10
+RVOL_RANGE = "1mo"  # Yahoo chart range that holds RVOL_DAYS earlier sessions of 5-minute bars
 SET_INDEX = "^SET.BK"
 
 
 def relative_volume(series, day, bar_start, days=RVOL_DAYS):
-    """Volume from the open to the end of the bar starting at bar_start, over the average of the
+    """Volume from the open to the end of the bar starting at bar_start, over the median of the
     same window on up to `days` earlier sessions in the series. None with fewer than two."""
     def window_volume(d):
         end = datetime.datetime.combine(d, bar_start.time()) + datetime.timedelta(minutes=BAR_MIN)
@@ -280,7 +284,7 @@ def relative_volume(series, day, bar_start, days=RVOL_DAYS):
     volumes = [v for v in (window_volume(d) for d in earlier) if v > 0]
     if len(volumes) < 2:
         return None
-    return round(window_volume(day) / (sum(volumes) / len(volumes)), 2)
+    return round(window_volume(day) / statistics.median(volumes), 2)
 
 
 def vwap_pct(bars, price):
@@ -672,8 +676,8 @@ def cmd_orb(a):
         def confirm(sym):
             if a.pause:
                 tm.SLEEP(a.pause)
-            # five days, not one: relative volume compares with the same window on earlier sessions
-            return tm.fetch_chart(sym, "5d", "%dm" % BAR_MIN)
+            # a month, not a day: relative volume compares with the same window on earlier sessions
+            return tm.fetch_chart(sym, RVOL_RANGE, "%dm" % BAR_MIN)
     tm.require_fetched(sum(1 for s in symbols if s in data), len(symbols), failed or {})
     # Yahoo's .BK bars run 15-30 minutes behind: cut at the latest bar it actually has, so a
     # delayed feed is not read as every chart missing its last bars.

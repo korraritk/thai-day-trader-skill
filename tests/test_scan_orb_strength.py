@@ -44,3 +44,15 @@ def test_index_change_pct_reads_the_index_at_the_break_bar():
     assert scan.index_change_pct(s, DAY, BREAK_BAR) == 1.0
     assert scan.index_change_pct(None, DAY, BREAK_BAR) is None
     assert scan.index_change_pct(today, DAY, BREAK_BAR) is None  # no earlier close to compare with
+
+
+def test_relative_volume_uses_the_median_of_ten_sessions_so_quiet_days_do_not_inflate_it():
+    # 2026-11-16: RATCH broke at 10:15 after two quiet openings and showed 23.77 times
+    earlier, d = [], DAY
+    while len(earlier) < 12:
+        d = date.fromordinal(d.toordinal() - 1)
+        if tm.is_trading_day(d):
+            earlier.append(d)
+    quiet = earlier[:2]  # the two sessions just before
+    s = series([(d, 1 if d in quiet else 100) for d in reversed(earlier)] + [(DAY, 300)])
+    assert scan.relative_volume(s, DAY, BREAK_BAR) == 3.0
