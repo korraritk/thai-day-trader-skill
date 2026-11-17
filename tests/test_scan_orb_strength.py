@@ -56,3 +56,17 @@ def test_relative_volume_uses_the_median_of_ten_sessions_so_quiet_days_do_not_in
     quiet = earlier[:2]  # the two sessions just before
     s = series([(d, 1 if d in quiet else 100) for d in reversed(earlier)] + [(DAY, 300)])
     assert scan.relative_volume(s, DAY, BREAK_BAR) == 3.0
+
+
+def test_a_hit_carries_the_last_price_up_to_the_run():
+    """The table shows where a breakout stands at the run, not only where it broke."""
+    s = series([(DAY, 1000)])
+    for i, t in enumerate(s["t"]):
+        start = tm.ts_to_bkk(t)
+        if start == BREAK_BAR:
+            s["c"][i], s["h"][i] = 10.6, 10.6  # closes above the 10.5 range high
+        elif start > BREAK_BAR:
+            s["c"][i] = 10.8 if start < datetime(2026, 10, 30, 10, 45) else 10.7
+    hits, _, _ = scan.scan_orb({"X": s}, ["X"], DAY, datetime(2026, 10, 30, 11, 0), 15)
+    assert hits[0]["price"] == 10.6 and hits[0]["at"] == "10:25"
+    assert hits[0]["last"] == 10.7 and hits[0]["last_at"] == "11:00"

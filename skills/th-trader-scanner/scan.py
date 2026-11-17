@@ -440,6 +440,9 @@ def scan_orb(stage1, symbols, day, cutoff, or_minutes, min_price=0.0, min_volume
             upto = full[:h["bar_index"] + 1]
             h["rvol"] = relative_volume(src, day, upto[-1]["start"]) if src.get("v") else None
             h["vwap_pct"] = vwap_pct(upto, h["price"]) if src.get("v") else None
+            # where the breakout stands at the run: the last completed bar up to the cutoff
+            h["last"] = round(full[-1]["c"], 2)
+            h["last_at"] = clock_label(full[-1]["start"] + datetime.timedelta(minutes=BAR_MIN))
             hits.append(dict({"symbol": sym, "setups": ["orb"]}, **h))
     hits.sort(key=lambda x: (x["_t"], x["symbol"]))
     for h in hits:

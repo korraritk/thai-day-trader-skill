@@ -131,3 +131,4 @@ def test_no_bars_for_the_day_yet_is_not_read_as_fresh(tmp_path, capsys):
     out = capsys.readouterr()
     assert "Traceback" not in out.err
     assert rc != 0 and "no 5-minute bar of 2026-10-30 yet" in out.err and "Traceback" not in out.out
+
