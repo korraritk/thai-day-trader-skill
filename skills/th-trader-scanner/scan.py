@@ -187,7 +187,8 @@ def scan_daily(data, symbols, now, min_price, min_value, min_volume, confirm=Non
         hits.append({"symbol": sym, "setups": tags, "price": round(closes[-1], 2),
                      "close_date": d_last.isoformat(), "rsi": round(nums["rsi"], 1) if nums["rsi"] is not None else None,
                      "volume": int(vol) if vol is not None else None,
-                     "value20": round(val) if val is not None else None})
+                     "value20": round(val) if val is not None else None,
+                     "levels": {t: round(nums[FAIL_LEVEL_KEYS[t]], 2) for t in tags if t in FAIL_LEVEL_KEYS}})
     hits.sort(key=lambda h: (-(h["value20"] or 0), h["symbol"]))  # most baht traded first
     last_date = max(dates, key=lambda d: (dates[d], d)) if dates else None
     counts["hits"] = len(hits)
@@ -197,6 +198,9 @@ def scan_daily(data, symbols, now, min_price, min_value, min_volume, confirm=Non
 # ---------------------------------------------------------------- opening-range breakout
 
 BAR_MIN = 5
+# the number find_setups reports for each pattern's fail level: the price where it no longer holds
+FAIL_LEVEL_KEYS = {"breakout_20d": "high20", "reclaim_ma20": "ma20", "bull_flag": "low5",
+                   "oversold_bounce": "prev_close"}
 MAX_CONFIRM = 200  # stage-2 v8 charts per orb scan, most traded first
 STALE_AFTER = 30  # minutes behind the clock before a warning
 

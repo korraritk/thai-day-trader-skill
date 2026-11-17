@@ -18,7 +18,8 @@ def rsi(closes, n=14):
 
 
 def find_setups(closes):
-    """closes (oldest first, >= 30) -> (setup keys, numbers). Unchanged from trader-scanner."""
+    """closes (oldest first, >= 30) -> (setup keys, numbers). The rules are unchanged from trader-scanner;
+    low5 and prev_close were added for the fail levels of bull_flag and oversold_bounce."""
     c = closes
     last = c[-1]
     hi20 = max(c[-21:-1])
@@ -40,4 +41,4 @@ def find_setups(closes):
     if r_prev is not None and r_prev < 30 and last > c[-2]:
         tags.append("oversold_bounce")
     return tags, {"rsi": r, "rsi_prev": r_prev, "high20": hi20, "ma20": ma20,
-                  "run_pct": run * 100, "range5_pct": rng5 * 100}
+                  "run_pct": run * 100, "range5_pct": rng5 * 100, "low5": min(c[-5:]), "prev_close": c[-2]}

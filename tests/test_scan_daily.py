@@ -94,3 +94,27 @@ def test_universe_writes_symbols(tmp_path):
     assert scan.main(["universe", "--file", f, "--out", str(out)]) == 0
     lines = [ln for ln in out.read_text(encoding="utf-8").splitlines() if not ln.startswith("#")]
     assert lines == ["PTT|SET", "AU|mai", "L&E|SET"]
+
+
+def test_find_setups_reports_flag_low_and_previous_close():
+    _, nums = scan.find_setups([10.0] * 25 + [10.5, 10.2, 10.8, 10.4, 10.9])
+    assert nums["low5"] == 10.2
+    assert nums["prev_close"] == 10.4
+
+
+def test_daily_hits_carry_the_fail_level_of_each_matched_pattern():
+    # flat at 10, a drop to 9, then a close of 11: a breakout over high20 = 10, back above MA20,
+    # and a bounce off the RSI that the one drop sent under 30
+    data = {"AAA": make_series([10.0] * 28 + [9.0, 11.0], [1_000_000] * 30)}
+    hits, _, _ = scan.scan_daily(data, ["AAA"], datetime(2026, 10, 30, 17, 30), 0, 0, 0)
+    assert hits[0]["setups"] == ["breakout_20d", "reclaim_ma20", "oversold_bounce"]
+    assert hits[0]["levels"] == {"breakout_20d": 10.0, "reclaim_ma20": round((10.0 * 18 + 9.0 + 11.0) / 20, 2),
+                                 "oversold_bounce": 9.0}
+
+
+def test_oversold_alone_has_no_fail_level():
+    falling = [20.0 - 0.3 * i for i in range(30)]
+    data = {"BBB": make_series(falling, [1_000_000] * 30)}
+    hits, _, _ = scan.scan_daily(data, ["BBB"], datetime(2026, 10, 30, 17, 30), 0, 0, 0)
+    assert hits[0]["setups"] == ["oversold"]
+    assert hits[0]["levels"] == {}
